@@ -4,8 +4,12 @@
  * - Keen 4 shareware ships as a prebuilt bundle (games/keen4.jsdos).
  * - Keen 5/6 (and full Keen 4): the user supplies their own data files, which we
  *   assemble into a .jsdos bundle entirely in the browser (nothing is uploaded).
+ *
+ * Wrapped in an IIFE: js-dos.js declares globals (including `var $`), so we must
+ * keep our own top-level names ($ , launch, DOSBOX_CONF, …) out of global scope.
  */
 
+(function () {
 "use strict";
 
 // dosbox.conf used for user-supplied bundles. __RUNCMD__ is replaced with the
@@ -194,3 +198,5 @@ window.addEventListener("DOMContentLoaded", () => {
     if (dt && dt.files && dt.files.length) handleFiles(dt.files);
   });
 });
+
+})();
