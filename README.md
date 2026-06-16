@@ -32,6 +32,15 @@ Select (or drop) these files for the episode you own:
 > **Keen 6 note:** the retail game shows a "Creature Question" copy-protection prompt at startup;
 > the answers are in the game manual. (Bypassing it is an Omnispeak feature — see the roadmap.)
 
+## Controls & settings
+
+- **Keyboard** (Keen defaults): arrows move · **Ctrl** = jump · **Alt** = pogo · **Space** = fire.
+- **Touch** (phones/tablets, or force it in Settings): the screen splits — game on top, an
+  on-screen D-pad + Jump/Pogo/Shoot buttons on the bottom.
+- **Settings** (on the launcher): aspect ratio (As-is, 1:1, 5:4, 4:3, 16:10, 16:9, Fit-to-window),
+  crisp vs. smooth pixels, and the touch-controls mode (auto/on/off).
+- **Saves persist** automatically in your browser (IndexedDB, per episode) and survive reloads.
+
 ## Project layout
 
 ```

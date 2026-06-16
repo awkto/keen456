@@ -64,27 +64,54 @@ __RUNCMD__
 `;
 
 let dosCi = null;           // running js-dos instance
+let gameCi = null;          // emulator command interface (for sending key events)
 let pendingBlobUrl = null;  // object URL for a built bundle, awaiting Play
 let pendingFiles = null;    // [{name, data:Uint8Array}]
 let pendingRunCmd = null;
+let pendingKey = null;      // persistence key for the BYO episode
 
 const $ = (id) => document.getElementById(id);
 
+// ---- settings (persisted in localStorage) ----------------------------------
+
+const SETTING_DEFAULTS = { aspect: "AsIs", rendering: "pixelated", touch: "auto" };
+const getSetting = (k) => localStorage.getItem("keen." + k) || SETTING_DEFAULTS[k];
+const setSetting = (k, v) => localStorage.setItem("keen." + k, v);
+
+function touchEnabled() {
+  const mode = getSetting("touch");
+  if (mode === "on") return true;
+  if (mode === "off") return false;
+  return window.matchMedia("(pointer: coarse)").matches; // auto
+}
+
 // ---- launching -------------------------------------------------------------
 
-function launch(url) {
+// `key` scopes the IndexedDB save storage so saves persist across reloads
+// (stable per episode, even when BYO bundles get fresh blob: URLs each time).
+function launch(url, key) {
   $("launcher").hidden = true;
   $("topbar").hidden = true;
   $("footer").hidden = true;
   $("game-stage").hidden = false;
+
+  if (touchEnabled()) {
+    $("game-stage").classList.add("touch");
+    $("touch-controls").hidden = false;
+  }
+
   // Dos() boots DOSBox-WASM into #dos and loads the .jsdos bundle at `url`.
   dosCi = Dos($("dos"), {
     url,
+    key,
     autoStart: true,
+    autoSave: true,            // auto-persist FS changes (savegames/config) to IndexedDB
     backend: "dosbox",
-    // keep it self-contained / offline-friendly: no cloud account prompts
-    noCloud: true,
+    noCloud: true,             // self-contained: no cloud account prompts
+    renderAspect: getSetting("aspect"),
+    imageRendering: getSetting("rendering"),
     onEvent: (event, arg) => {
+      if (event === "ci-ready") gameCi = arg;   // command interface for touch input
       if (event === "error") {
         alert("js-dos error:\n\n" + arg +
           "\n\nIf you supplied your own files, double-check they are the right episode's " +
@@ -152,6 +179,7 @@ async function handleFiles(fileList) {
   if (allOk) {
     pendingFiles = files;
     pendingRunCmd = exe.name;
+    pendingKey = "keen" + (episode || "x");
     $("play-byo").disabled = false;
   }
 }
@@ -171,13 +199,71 @@ function playByo() {
   if (!pendingFiles) return;
   const blob = buildBundleBlob(pendingFiles, pendingRunCmd);
   pendingBlobUrl = URL.createObjectURL(blob);
-  launch(pendingBlobUrl);
+  launch(pendingBlobUrl, pendingKey);
+}
+
+// ---- touch controls --------------------------------------------------------
+
+const activeByPointer = new Map(); // pointerId -> [keyCodes]
+
+function sendKey(code, down) {
+  if (gameCi && typeof gameCi.sendKeyEvent === "function") {
+    try { gameCi.sendKeyEvent(code, down); } catch (_) {}
+  }
+}
+
+function bindTouchButton(btn) {
+  const keys = (btn.dataset.keys || "").split(",").map(Number).filter(Boolean);
+  if (!keys.length) return;
+
+  const press = (e) => {
+    e.preventDefault();
+    btn.classList.add("active");
+    keys.forEach((k) => sendKey(k, true));
+    if (e.pointerId != null) activeByPointer.set(e.pointerId, keys);
+  };
+  const release = (e) => {
+    btn.classList.remove("active");
+    keys.forEach((k) => sendKey(k, false));
+    if (e && e.pointerId != null) activeByPointer.delete(e.pointerId);
+  };
+
+  btn.addEventListener("pointerdown", press);
+  btn.addEventListener("pointerup", release);
+  btn.addEventListener("pointercancel", release);
+  btn.addEventListener("pointerleave", release);
+  btn.addEventListener("contextmenu", (e) => e.preventDefault());
+}
+
+function setupTouchControls() {
+  document.querySelectorAll("#touch-controls [data-keys]").forEach(bindTouchButton);
+  // Safety net: if a pointer is lost (window blur, etc.), release everything.
+  const releaseAll = () => {
+    activeByPointer.forEach((keys) => keys.forEach((k) => sendKey(k, false)));
+    activeByPointer.clear();
+    document.querySelectorAll("#touch-controls .active").forEach((b) => b.classList.remove("active"));
+  };
+  window.addEventListener("blur", releaseAll);
+}
+
+// ---- settings UI -----------------------------------------------------------
+
+function setupSettings() {
+  [["set-aspect", "aspect"], ["set-rendering", "rendering"], ["set-touch", "touch"]]
+    .forEach(([id, key]) => {
+      const sel = $(id);
+      sel.value = getSetting(key);
+      sel.addEventListener("change", () => setSetting(key, sel.value));
+    });
 }
 
 // ---- wiring ----------------------------------------------------------------
 
 window.addEventListener("DOMContentLoaded", () => {
-  $("play-keen4").addEventListener("click", () => launch("games/keen4.jsdos"));
+  setupSettings();
+  setupTouchControls();
+
+  $("play-keen4").addEventListener("click", () => launch("games/keen4.jsdos", "keen4"));
   $("back-btn").addEventListener("click", quit);
   $("play-byo").addEventListener("click", playByo);
 

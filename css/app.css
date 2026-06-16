@@ -170,3 +170,110 @@ html, body {
 }
 #footer a { color: var(--accent2); }
 #footer .legal { font-size: 0.75rem; opacity: 0.8; margin-top: 0.4rem; }
+
+/* ---- settings panel ---- */
+.settings-card { grid-column: 1 / -1; }
+.setting {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin: 0.6rem 0;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+.setting select {
+  flex: 0 1 280px;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  background: #0003;
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+/* ---- touch controls (mobile split view) ---- */
+.touch-controls { display: none; }
+
+/* When touch mode is active, split the stage: top half game, bottom half controls. */
+.game-stage.touch { flex-direction: column; }
+.game-stage.touch .dos-window { flex: 1 1 50%; min-height: 0; }
+.game-stage.touch .touch-controls {
+  flex: 1 1 50%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 2vmin;
+  padding: 2vmin 3vmin calc(2vmin + env(safe-area-inset-bottom));
+  background: #120a26;
+  border-top: 2px solid var(--border);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dpad {
+  justify-self: center;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  width: min(42vw, 38vh);
+  height: min(42vw, 38vh);
+  gap: 4px;
+}
+.dbtn {
+  border: 1px solid var(--border);
+  background: #2a1a4a;
+  color: var(--accent2);
+  border-radius: 10px;
+  font-size: 1.4rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+.dbtn.diag { background: #20143a; border-style: dashed; }
+.dbtn.dcenter { background: transparent; border: none; }
+.dbtn.active { background: var(--accent); color: #1a1033; }
+
+.menu-keys {
+  justify-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 2vmin;
+}
+.mbtn {
+  min-width: 14vmin;
+  padding: 1.4vmin 0;
+  border: 1px solid var(--border);
+  background: #2a1a4a;
+  color: var(--text);
+  border-radius: 10px;
+  font-size: 1rem;
+  touch-action: none;
+}
+.mbtn.active { background: var(--accent); color: #1a1033; }
+
+.actions {
+  justify-self: center;
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 3vmin;
+  align-items: center;
+}
+.abtn {
+  width: min(20vw, 16vh);
+  height: min(20vw, 16vh);
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  font-weight: 800;
+  font-size: clamp(0.7rem, 2.6vmin, 1.1rem);
+  color: #1a1033;
+  touch-action: none;
+}
+.abtn.jump  { background: #6ee06e; grid-column: 2; grid-row: 1; }
+.abtn.pogo  { background: var(--accent2); grid-column: 1; grid-row: 1; }
+.abtn.shoot { background: #ff6b6b; grid-column: 1 / -1; justify-self: center; }
+.abtn.active { filter: brightness(0.7); transform: scale(0.95); }

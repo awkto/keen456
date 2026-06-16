@@ -7,11 +7,12 @@ Real DOS binaries under DOSBox-WASM, fully client-side.
 - [x] M0 — Keen 4 shareware playable from a prebuilt `.jsdos` bundle
 - [x] M0 — Drag-drop / file-picker → in-browser `.jsdos` bundle for Keen 5/6 (and full Keen 4)
 - [x] M0 — Static site, deployable to GitHub Pages
-- [ ] Save-game persistence across reloads (wire up js-dos storage / IndexedDB)
-- [ ] Per-game cycles tuning + a simple settings panel
+- [x] Save-game persistence across reloads (js-dos `autoSave` + IndexedDB, keyed per episode)
+- [x] Settings panel: aspect ratio (As-is/1:1/5:4/4:3/16:10/16:9/Fit) + crisp/smooth pixels
+- [x] Mobile/touch on-screen controls (D-pad + Jump/Pogo/Shoot, vertical split layout)
+- [ ] Per-game cycles tuning in the settings panel
 - [ ] Optional cross-origin isolation (COOP/COEP via service worker) to enable
       SharedArrayBuffer on GitHub Pages for smoother audio/perf
-- [ ] Mobile/touch on-screen controls
 
 ## Path 2 — Omnispeak → WebAssembly (planned, separate branch)
 

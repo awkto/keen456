@@ -10,7 +10,7 @@
   <script src="https://v8.js-dos.com/latest/js-dos.js"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=5">
+  <link rel="stylesheet" href="css/app.css?v=6">
 </head>
 <body>
   <header id="topbar">
@@ -46,11 +46,68 @@
       <div id="file-status" class="file-status" hidden></div>
       <button id="play-byo" class="play-btn" disabled>▶ Play</button>
     </section>
+
+    <section class="card settings-card">
+      <h2>⚙ Settings</h2>
+      <p>Applied when you start a game. Saves persist automatically in your browser.</p>
+      <label class="setting">Aspect ratio
+        <select id="set-aspect">
+          <option value="AsIs">As-is — sharp 16:10 (default)</option>
+          <option value="4/3">4:3 — classic CRT</option>
+          <option value="5/4">5:4</option>
+          <option value="16/10">16:10</option>
+          <option value="16/9">16:9 — widescreen (stretched)</option>
+          <option value="1/1">1:1 — square pixels</option>
+          <option value="Fit">Fit window — fill the screen</option>
+        </select>
+      </label>
+      <label class="setting">Pixels
+        <select id="set-rendering">
+          <option value="pixelated">Crisp — pixel-perfect (default)</option>
+          <option value="smooth">Smooth — blurred</option>
+        </select>
+      </label>
+      <label class="setting">Touch controls
+        <select id="set-touch">
+          <option value="auto">Auto — on for touch devices (default)</option>
+          <option value="on">Always on</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
+    </section>
   </main>
 
   <!-- The js-dos player mounts here when a game launches -->
   <div id="game-stage" class="game-stage" hidden>
     <div id="dos" class="dos-window"></div>
+
+    <!-- On-screen controls for touch devices. Sends key events straight to the
+         emulator. Keen Galaxy defaults: arrows move, Ctrl=Jump, Alt=Pogo, Space=Fire. -->
+    <div id="touch-controls" class="touch-controls" hidden>
+      <div class="dpad">
+        <button class="dbtn diag" data-keys="265,263" aria-label="up-left"></button>
+        <button class="dbtn" data-keys="265" aria-label="up">▲</button>
+        <button class="dbtn diag" data-keys="265,262" aria-label="up-right"></button>
+        <button class="dbtn" data-keys="263" aria-label="left">◀</button>
+        <button class="dbtn dcenter" disabled></button>
+        <button class="dbtn" data-keys="262" aria-label="right">▶</button>
+        <button class="dbtn diag" data-keys="264,263" aria-label="down-left"></button>
+        <button class="dbtn" data-keys="264" aria-label="down">▼</button>
+        <button class="dbtn diag" data-keys="264,262" aria-label="down-right"></button>
+      </div>
+
+      <div class="menu-keys">
+        <button class="mbtn" data-keys="257" aria-label="Enter">⏎</button>
+        <button class="mbtn" data-keys="256" aria-label="Escape">ESC</button>
+      </div>
+
+      <div class="actions">
+        <button class="abtn shoot" data-keys="32">SHOOT</button>
+        <button class="abtn pogo" data-keys="342">POGO</button>
+        <button class="abtn jump" data-keys="341">JUMP</button>
+      </div>
+    </div>
+
     <button id="back-btn" class="back-btn" title="Quit to launcher">✕ Quit</button>
   </div>
 
@@ -64,6 +121,6 @@
     </p>
   </footer>
 
-  <script src="js/app.js?v=5"></script>
+  <script src="js/app.js?v=6"></script>
 </body>
 </html>
