@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Commander Keen 4·5·6 — in your browser</title>
+  <meta name="description" content="Play Commander Keen: Goodbye, Galaxy! (episodes 4, 5, 6) in your browser. Keen 4 shareware playable instantly; bring your own data for Keen 5 and 6.">
+  <!-- js-dos v8 (DOSBox compiled to WebAssembly) -->
+  <link rel="stylesheet" href="https://v8.js-dos.com/latest/js-dos.css">
+  <script src="https://v8.js-dos.com/latest/js-dos.js"></script>
+  <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
+  <script src="js/fflate.min.js"></script>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header id="topbar">
+    <h1>Commander&nbsp;Keen <span class="eps">4 · 5 · 6</span></h1>
+    <p class="tagline">Goodbye, Galaxy! &amp; Aliens Ate My Babysitter — in your browser.</p>
+  </header>
+
+  <main id="launcher">
+    <section class="card demo-card">
+      <h2>Keen 4 <span class="badge free">free shareware</span></h2>
+      <p>Secret of the Oracle — episode 4 shareware (v1.4). Freely redistributable, no files needed.</p>
+      <button id="play-keen4" class="play-btn">▶ Play Keen 4 (demo)</button>
+    </section>
+
+    <section class="card byo-card">
+      <h2>Keen 5 &amp; 6 <span class="badge byo">bring your own data</span></h2>
+      <p>
+        Keen 5 (<em>The Armageddon Machine</em>) and Keen 6 (<em>Aliens Ate My Babysitter</em>) are
+        commercial — buy them on <a href="https://www.gog.com/game/commander_keen_complete_pack" target="_blank" rel="noopener">GOG</a>
+        or <a href="https://store.steampowered.com/app/9180/Commander_Keen_Pack/" target="_blank" rel="noopener">Steam</a>,
+        then drop the data files here. Nothing is uploaded — everything runs in your browser.
+      </p>
+
+      <div id="dropzone" class="dropzone" tabindex="0">
+        <div class="dz-inner">
+          <div class="dz-icon">📁</div>
+          <p><strong>Drop game files here</strong> or click to choose</p>
+          <p class="dz-hint">Select the episode's <code>*.EXE</code> + <code>AUDIO.CK?</code>, <code>EGAGRAPH.CK?</code>, <code>GAMEMAPS.CK?</code> (you can also use your own full Keen 4 files).</p>
+        </div>
+        <input id="file-input" type="file" multiple accept=".exe,.ck4,.ck5,.ck6,.CK4,.CK5,.CK6,.EXE" hidden>
+      </div>
+
+      <div id="file-status" class="file-status" hidden></div>
+      <button id="play-byo" class="play-btn" disabled>▶ Play</button>
+    </section>
+  </main>
+
+  <!-- The js-dos player mounts here when a game launches -->
+  <div id="game-stage" class="game-stage" hidden>
+    <div id="dos" class="dos-window"></div>
+    <button id="back-btn" class="back-btn" title="Quit to launcher">✕ Quit</button>
+  </div>
+
+  <footer id="footer">
+    <p>
+      Powered by <a href="https://js-dos.com" target="_blank" rel="noopener">js-dos</a> (DOSBox → WebAssembly).
+      Runs 100% in your browser. <a href="https://github.com/awkto/keen456" target="_blank" rel="noopener">Source on GitHub</a>.
+    </p>
+    <p class="legal">
+      Commander Keen © id Software. Keen 4 shareware is freely redistributable; Keen 5/6 data are not bundled — supply your own.
+    </p>
+  </footer>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

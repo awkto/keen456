@@ -1,0 +1,18 @@
+# Never commit commercial Keen data. Only the shareware keen4.jsdos is allowed.
+games/*.jsdos
+!games/keen4.jsdos
+
+# Commercial / user-supplied game data (any episode)
+*.CK5
+*.CK6
+*.ck5
+*.ck6
+KEEN5*.EXE
+KEEN6*.EXE
+keen5*
+keen6*
+
+# Cruft
+.DS_Store
+node_modules/
+*.log
