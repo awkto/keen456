@@ -10,7 +10,7 @@
   <script src="https://v8.js-dos.com/latest/js-dos.js"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=6">
+  <link rel="stylesheet" href="css/app.css?v=7">
 </head>
 <body>
   <header id="topbar">
@@ -19,13 +19,21 @@
   </header>
 
   <main id="launcher">
-    <section class="card demo-card">
+    <!-- Server/kiosk mode: populated from games/manifest.json when the app runs
+         from the container with a mounted data dir. Hides the cards below. -->
+    <section id="server-games" class="card" hidden>
+      <h2>Games</h2>
+      <p>Detected on the server — click to play.</p>
+      <div id="server-games-list"></div>
+    </section>
+
+    <section class="card demo-card" id="demo-card">
       <h2>Keen 4 <span class="badge free">free shareware</span></h2>
       <p>Secret of the Oracle — episode 4 shareware (v1.4). Freely redistributable, no files needed.</p>
       <button id="play-keen4" class="play-btn">▶ Play Keen 4 (demo)</button>
     </section>
 
-    <section class="card byo-card">
+    <section class="card byo-card" id="byo-card">
       <h2>Keen 5 &amp; 6 <span class="badge byo">bring your own data</span></h2>
       <p>
         Keen 5 (<em>The Armageddon Machine</em>) and Keen 6 (<em>Aliens Ate My Babysitter</em>) are
@@ -84,16 +92,8 @@
     <!-- On-screen controls for touch devices. Sends key events straight to the
          emulator. Keen Galaxy defaults: arrows move, Ctrl=Jump, Alt=Pogo, Space=Fire. -->
     <div id="touch-controls" class="touch-controls" hidden>
-      <div class="dpad">
-        <button class="dbtn diag" data-keys="265,263" aria-label="up-left"></button>
-        <button class="dbtn" data-keys="265" aria-label="up">▲</button>
-        <button class="dbtn diag" data-keys="265,262" aria-label="up-right"></button>
-        <button class="dbtn" data-keys="263" aria-label="left">◀</button>
-        <button class="dbtn dcenter" disabled></button>
-        <button class="dbtn" data-keys="262" aria-label="right">▶</button>
-        <button class="dbtn diag" data-keys="264,263" aria-label="down-left"></button>
-        <button class="dbtn" data-keys="264" aria-label="down">▼</button>
-        <button class="dbtn diag" data-keys="264,262" aria-label="down-right"></button>
+      <div class="stick" id="stick" aria-label="movement joystick">
+        <div class="stick-knob" id="stick-knob"></div>
       </div>
 
       <div class="menu-keys">
@@ -102,9 +102,9 @@
       </div>
 
       <div class="actions">
-        <button class="abtn shoot" data-keys="32">SHOOT</button>
         <button class="abtn pogo" data-keys="342">POGO</button>
         <button class="abtn jump" data-keys="341">JUMP</button>
+        <button class="abtn shoot" data-keys="32">SHOOT</button>
       </div>
     </div>
 
@@ -121,6 +121,6 @@
     </p>
   </footer>
 
-  <script src="js/app.js?v=6"></script>
+  <script src="js/app.js?v=7"></script>
 </body>
 </html>

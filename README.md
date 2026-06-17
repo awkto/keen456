@@ -52,6 +52,32 @@ games/keen4.jsdos  prebuilt Keen 4 shareware bundle (redistributable)
 ROADMAP.md         Path 2: Omnispeak → WebAssembly (native engine port)
 ```
 
+## Self-hosting with Docker
+
+A container image is published to Docker Hub as **`awkto/keen456`** by GitHub Actions on every
+`v*.*.*` tag (`:latest` tracks the newest release).
+
+```bash
+docker run -d --name keen456 --restart unless-stopped \
+  -p 127.0.0.1:5023:80 \
+  -v /path/to/keen-data:/data:ro \
+  awkto/keen456:latest
+```
+
+**Server / kiosk mode:** mount a directory of your own Keen files at `/data`. On startup the
+container detects each episode, builds its `.jsdos` bundle, and writes `games/manifest.json` — the
+launcher then shows **only the available games** as one-click buttons and hides the upload UI.
+Layout under `/data` can be flat or one subdir per episode:
+
+```
+/data/AUDIO.CK5  EGAGRAPH.CK5  GAMEMAPS.CK5  KEEN5E.EXE      # flat, or…
+/data/keen5/AUDIO.CK5  EGAGRAPH.CK5  GAMEMAPS.CK5  KEEN5E.EXE
+```
+
+Keen 4 falls back to the bundled shareware if `/data` has no Keen 4. Commercial Keen 5/6 data is
+never baked into the image — it only ever lives in your mounted `/data`. With no `/data`, the
+container runs in normal bring-your-own-data mode.
+
 ## Roadmap
 
 See [`ROADMAP.md`](ROADMAP.md). Short version: this js-dos build is **Path 1** (fast, authentic,

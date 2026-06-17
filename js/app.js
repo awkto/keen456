@@ -95,7 +95,8 @@ function launch(url, key) {
   $("footer").hidden = true;
   $("game-stage").hidden = false;
 
-  if (touchEnabled()) {
+  const touch = touchEnabled();
+  if (touch) {
     $("game-stage").classList.add("touch");
     $("touch-controls").hidden = false;
   }
@@ -108,6 +109,7 @@ function launch(url, key) {
     autoSave: true,            // auto-persist FS changes (savegames/config) to IndexedDB
     backend: "dosbox",
     noCloud: true,             // self-contained: no cloud account prompts
+    thinSidebar: touch,        // slim the js-dos sidebar on touch (CSS moves it to the top)
     renderAspect: getSetting("aspect"),
     imageRendering: getSetting("rendering"),
     onEvent: (event, arg) => {
@@ -235,12 +237,70 @@ function bindTouchButton(btn) {
   btn.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
+// Virtual joystick -> arrow keys (8-way). Removes the dead center of a d-pad.
+const ARROWS = { up: 265, down: 264, left: 263, right: 262 };
+const arrowState = { up: false, down: false, left: false, right: false };
+
+function setArrow(dir, on) {
+  if (arrowState[dir] !== on) {
+    arrowState[dir] = on;
+    sendKey(ARROWS[dir], on);
+  }
+}
+function clearArrows() { Object.keys(ARROWS).forEach((d) => setArrow(d, false)); }
+
+function setupJoystick() {
+  const base = $("stick");
+  const knob = $("stick-knob");
+  if (!base) return;
+  let pid = null;
+
+  const update = (cx, cy) => {
+    const r = base.getBoundingClientRect();
+    const ox = r.left + r.width / 2;
+    const oy = r.top + r.height / 2;
+    const dx = cx - ox;
+    const dy = cy - oy;
+    const max = r.width / 2;
+    const dist = Math.hypot(dx, dy);
+    const k = Math.min(1, dist / max);
+    const ang = Math.atan2(dy, dx);
+    knob.style.transform = `translate(${Math.cos(ang) * k * max}px, ${Math.sin(ang) * k * max}px)`;
+
+    const want = { up: false, down: false, left: false, right: false };
+    if (dist >= max * 0.3) {               // deadzone
+      let a = (Math.atan2(-dy, dx) * 180 / Math.PI + 360) % 360; // 0=right, 90=up
+      if (a >= 22.5 && a < 67.5) { want.up = want.right = true; }
+      else if (a >= 67.5 && a < 112.5) { want.up = true; }
+      else if (a >= 112.5 && a < 157.5) { want.up = want.left = true; }
+      else if (a >= 157.5 && a < 202.5) { want.left = true; }
+      else if (a >= 202.5 && a < 247.5) { want.down = want.left = true; }
+      else if (a >= 247.5 && a < 292.5) { want.down = true; }
+      else if (a >= 292.5 && a < 337.5) { want.down = want.right = true; }
+      else { want.right = true; }
+    }
+    Object.keys(ARROWS).forEach((d) => setArrow(d, want[d]));
+  };
+  const reset = () => { pid = null; knob.style.transform = ""; clearArrows(); };
+
+  base.addEventListener("pointerdown", (e) => {
+    e.preventDefault(); pid = e.pointerId;
+    try { base.setPointerCapture(pid); } catch (_) {}
+    update(e.clientX, e.clientY);
+  });
+  base.addEventListener("pointermove", (e) => { if (e.pointerId === pid) update(e.clientX, e.clientY); });
+  base.addEventListener("pointerup", (e) => { if (e.pointerId === pid) reset(); });
+  base.addEventListener("pointercancel", (e) => { if (e.pointerId === pid) reset(); });
+}
+
 function setupTouchControls() {
   document.querySelectorAll("#touch-controls [data-keys]").forEach(bindTouchButton);
+  setupJoystick();
   // Safety net: if a pointer is lost (window blur, etc.), release everything.
   const releaseAll = () => {
     activeByPointer.forEach((keys) => keys.forEach((k) => sendKey(k, false)));
     activeByPointer.clear();
+    clearArrows();
     document.querySelectorAll("#touch-controls .active").forEach((b) => b.classList.remove("active"));
   };
   window.addEventListener("blur", releaseAll);
@@ -257,11 +317,51 @@ function setupSettings() {
     });
 }
 
+// ---- server / kiosk mode ---------------------------------------------------
+
+const EPISODE_TITLES = {
+  4: "Secret of the Oracle",
+  5: "The Armageddon Machine",
+  6: "Aliens Ate My Babysitter",
+};
+
+// When served from the container with a mounted data dir, an entrypoint writes
+// games/manifest.json listing the available episodes. In that case we show only
+// those games and hide the bring-your-own-data UI.
+async function setupServerMode() {
+  let manifest;
+  try {
+    const res = await fetch("games/manifest.json", { cache: "no-store" });
+    if (!res.ok) return;
+    manifest = await res.json();
+  } catch (_) { return; }
+  if (!manifest || !manifest.serverMode || !Array.isArray(manifest.games) || !manifest.games.length) return;
+
+  $("demo-card").hidden = true;
+  $("byo-card").hidden = true;
+
+  const list = $("server-games-list");
+  list.innerHTML = "";
+  manifest.games
+    .slice()
+    .sort((a, b) => a.episode - b.episode)
+    .forEach((g) => {
+      const btn = document.createElement("button");
+      btn.className = "play-btn";
+      const title = g.title || EPISODE_TITLES[g.episode] || "";
+      btn.textContent = `▶ Play Keen ${g.episode}${title ? " — " + title : ""}`;
+      btn.addEventListener("click", () => launch(g.bundle, "keen" + g.episode));
+      list.appendChild(btn);
+    });
+  $("server-games").hidden = false;
+}
+
 // ---- wiring ----------------------------------------------------------------
 
 window.addEventListener("DOMContentLoaded", () => {
   setupSettings();
   setupTouchControls();
+  setupServerMode();
 
   $("play-keen4").addEventListener("click", () => launch("games/keen4.jsdos", "keen4"));
   $("back-btn").addEventListener("click", quit);

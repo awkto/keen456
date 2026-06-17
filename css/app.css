@@ -213,40 +213,38 @@ html, body {
   -webkit-user-select: none;
 }
 
-.dpad {
+/* movement joystick (replaces the old empty-center d-pad) */
+.stick {
+  position: relative;
   justify-self: center;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(3, 1fr);
-  width: min(42vw, 38vh);
-  height: min(42vw, 38vh);
-  gap: 4px;
-}
-.dbtn {
-  border: 1px solid var(--border);
-  background: #2a1a4a;
-  color: var(--accent2);
-  border-radius: 10px;
-  font-size: 1.4rem;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: min(42vw, 36vh);
+  height: min(42vw, 36vh);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, #2a1a4a, #160d30 70%);
+  border: 2px solid var(--border);
   touch-action: none;
 }
-.dbtn.diag { background: #20143a; border-style: dashed; }
-.dbtn.dcenter { background: transparent; border: none; }
-.dbtn.active { background: var(--accent); color: #1a1033; }
+.stick-knob {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 42%; height: 42%;
+  margin-left: -21%; margin-top: -21%;
+  border-radius: 50%;
+  background: var(--accent2);
+  border: 3px solid #ffffff55;
+  box-shadow: 0 2px 10px #000a;
+  will-change: transform;
+}
 
 .menu-keys {
   justify-self: center;
   display: flex;
   flex-direction: column;
-  gap: 2vmin;
+  gap: 3vmin;
 }
 .mbtn {
   min-width: 14vmin;
-  padding: 1.4vmin 0;
+  padding: 1.6vmin 0;
   border: 1px solid var(--border);
   background: #2a1a4a;
   color: var(--text);
@@ -260,7 +258,7 @@ html, body {
   justify-self: center;
   display: grid;
   grid-template-columns: repeat(2, auto);
-  gap: 3vmin;
+  gap: 5vmin;            /* spread the action buttons further apart */
   align-items: center;
 }
 .abtn {
@@ -273,7 +271,28 @@ html, body {
   color: #1a1033;
   touch-action: none;
 }
-.abtn.jump  { background: #6ee06e; grid-column: 2; grid-row: 1; }
 .abtn.pogo  { background: var(--accent2); grid-column: 1; grid-row: 1; }
+.abtn.jump  { background: #6ee06e;        grid-column: 2; grid-row: 1; }
 .abtn.shoot { background: #ff6b6b; grid-column: 1 / -1; justify-self: center; }
 .abtn.active { filter: brightness(0.7); transform: scale(0.95); }
+
+/* In touch mode, move the js-dos sidebar (save/keyboard/fullscreen/settings) out of
+   the top-left of the play area to a horizontal strip across the TOP of the game pane,
+   centered and far from the bottom thumb controls. Reclaim the canvas's left offset. */
+.game-stage.touch #dos .sidebar,
+.game-stage.touch #dos .sidebar-thin {
+  flex-direction: row !important;
+  width: 100% !important;
+  height: auto !important;
+  top: 0 !important;
+  bottom: auto !important;
+  left: 0 !important;
+  justify-content: center !important;
+  gap: 3vw;
+  padding: 3px 0 !important;
+  background: linear-gradient(0deg, hsl(var(--b3)), hsl(var(--b2))) !important;
+}
+.game-stage.touch #dos .left-12 { left: 0 !important; }
+
+/* server/kiosk games list */
+#server-games-list { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.8rem; }
