@@ -30,9 +30,9 @@ Select (or drop) these files for the episode you own:
 | the game `.EXE` | `KEEN5E.EXE`  |
 
 > **Keen 6 note:** the retail game shows a "Creature Question" copy-protection prompt at startup
-> (the answers are in the game manual). If your copy includes a `KEEN6.COM` loader (a RawCopy
-> TSR patch that boots past the prompt), include it alongside the data files — the launcher and the
-> server/kiosk mode both detect a `KEEN<ep>.COM` loader and run it instead of the `.EXE`.
+> (the answers are in the game manual). A pre-patched **`KEEN6C.EXE`** boots straight past it —
+> supply that instead of the stock `KEEN6.EXE` (the launcher runs the `KEEN6*.EXE` it finds). The
+> RawCopy `KEEN6.COM` loader is *not* sufficient under js-dos's DOSBox, so `KEEN6C.EXE` is the way.
 
 ## Controls & settings
 

@@ -89,7 +89,7 @@ function touchEnabled() {
 
 // `key` scopes the IndexedDB save storage so saves persist across reloads
 // (stable per episode, even when BYO bundles get fresh blob: URLs each time).
-function launch(url, key, backend) {
+function launch(url, key) {
   $("launcher").hidden = true;
   $("topbar").hidden = true;
   $("footer").hidden = true;
@@ -107,10 +107,7 @@ function launch(url, key, backend) {
     key,
     autoStart: true,
     autoSave: true,            // auto-persist FS changes (savegames/config) to IndexedDB
-    // Keen 6 launches via its KEEN6.COM RawCopy loader to skip the manual-word
-    // copy protection; that in-memory patch only lands on the DOSBox-X backend
-    // (the plain "dosbox" backend still shows the "check your manual" nag).
-    backend: backend || "dosbox",
+    backend: "dosbox",
     noCloud: true,             // self-contained: no cloud account prompts
     thinSidebar: touch,        // slim the js-dos sidebar on touch (CSS moves it to the top)
     renderAspect: getSetting("aspect"),
@@ -157,9 +154,6 @@ async function handleFiles(fileList) {
   const has = (re) => names.some((n) => re.test(n));
   const exe = files.find((f) => /\.EXE$/.test(f.name) && /KEEN/.test(f.name))
            || files.find((f) => /\.EXE$/.test(f.name));
-  // A KEEN*.COM loader (e.g. Keen 6's RawCopy TSR patch) boots past the
-  // "creature question" copy protection — prefer it as the run command.
-  const com = files.find((f) => /^KEEN.*\.COM$/.test(f.name));
 
   // Which episode? Derive from the CKx extension present.
   const epMatch = names.map((n) => n.match(/\.CK([456])$/)).find(Boolean);
@@ -179,16 +173,16 @@ async function handleFiles(fileList) {
   const allOk = checks.every(([ok]) => ok);
   let extra = "";
   if (allOk && episode === "6") {
-    extra = com
-      ? `<div class="ok" style="margin-top:.5rem">✓ ${com.name} detected — will boot past the Keen 6 "Creature Question" copy protection.</div>`
-      : `<div style="margin-top:.5rem">⚠ Keen 6 shows a "Creature Question" copy-protection prompt at startup — the answers are in the game's manual. (If your copy includes a <code>KEEN6.COM</code> loader, add it too and it'll be used to skip the prompt.)</div>`;
+    extra = /6C\.EXE$/i.test(exe.name)
+      ? `<div class="ok" style="margin-top:.5rem">✓ Using ${exe.name} — boots straight past the Keen 6 copy-protection prompt.</div>`
+      : `<div style="margin-top:.5rem">⚠ Keen 6 shows a "Creature Question" copy-protection prompt at startup (the answers are in the game's manual). A pre-patched <code>KEEN6C.EXE</code> boots past it — supply that instead of the stock <code>KEEN6.EXE</code>.</div>`;
   }
   status.innerHTML = `<div><strong>Selected ${files.length} file(s)` +
     (episode ? ` — detected Keen ${episode}` : "") + `:</strong></div>` + rows + extra;
 
   if (allOk) {
     pendingFiles = files;
-    pendingRunCmd = com ? com.name : exe.name;   // prefer the no-DRM loader
+    pendingRunCmd = exe.name;
     pendingKey = "keen" + (episode || "x");
     $("play-byo").disabled = false;
   }
@@ -209,7 +203,7 @@ function playByo() {
   if (!pendingFiles) return;
   const blob = buildBundleBlob(pendingFiles, pendingRunCmd);
   pendingBlobUrl = URL.createObjectURL(blob);
-  launch(pendingBlobUrl, pendingKey, pendingKey === "keen6" ? "dosboxX" : "dosbox");
+  launch(pendingBlobUrl, pendingKey);
 }
 
 // ---- touch controls --------------------------------------------------------
@@ -386,8 +380,7 @@ async function setupServerMode() {
       btn.className = "play-btn";
       const title = g.title || EPISODE_TITLES[g.episode] || "";
       btn.textContent = `▶ Play Keen ${g.episode}${title ? " — " + title : ""}`;
-      btn.addEventListener("click", () => launch(g.bundle, "keen" + g.episode,
-        g.episode == 6 ? "dosboxX" : "dosbox"));
+      btn.addEventListener("click", () => launch(g.bundle, "keen" + g.episode));
       list.appendChild(btn);
     });
   $("server-games").hidden = false;
