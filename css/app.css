@@ -213,11 +213,11 @@ html, body {
 .game-stage.touch .touch-controls {
   flex: 1 1 50%;
   min-height: 0;
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
   align-items: center;
-  gap: 2vmin;
-  padding: 2vmin 3vmin calc(2vmin + env(safe-area-inset-bottom));
+  justify-content: space-between;
+  gap: 2vw;
+  padding: 2vw 3vw calc(2vw + env(safe-area-inset-bottom));
   background: #120a26;
   border-top: 2px solid var(--border);
   touch-action: none;
@@ -228,9 +228,9 @@ html, body {
 /* movement joystick (replaces the old empty-center d-pad) */
 .stick {
   position: relative;
-  justify-self: center;
-  width: min(42vw, 36vh);
-  height: min(42vw, 36vh);
+  flex: 0 0 auto;
+  width: min(34vw, 40vh);
+  height: min(34vw, 40vh);
   border-radius: 50%;
   background: radial-gradient(circle at 50% 50%, #2a1a4a, #160d30 70%);
   border: 2px solid var(--border);
@@ -249,7 +249,7 @@ html, body {
 }
 
 .menu-keys {
-  justify-self: center;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: 3vmin;
@@ -267,15 +267,15 @@ html, body {
 .mbtn.active { background: var(--accent); color: #1a1033; }
 
 .actions {
-  justify-self: center;
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(2, auto);
-  gap: 5vmin;            /* spread the action buttons further apart */
+  gap: 3vw;              /* spread the action buttons apart (but keep them on-screen) */
   align-items: center;
 }
 .abtn {
-  width: min(20vw, 16vh);
-  height: min(20vw, 16vh);
+  width: min(18vw, 22vh);
+  height: min(18vw, 22vh);
   border-radius: 50%;
   border: 2px solid var(--border);
   font-weight: 800;
@@ -305,6 +305,10 @@ html, body {
   background: linear-gradient(0deg, hsl(var(--b3)), hsl(var(--b2))) !important;
 }
 .game-stage.touch #dos .left-12 { left: 0 !important; }
+/* js-dos reserves a thin left gutter (a `w-4 flex-shrink-0` spacer) for the
+   sidebar; since we moved the sidebar to a top strip, collapse it so the game
+   canvas isn't pushed right (no empty pad on the left). */
+.game-stage.touch #dos .flex-row > .w-4 { display: none !important; }
 
 /* server/kiosk games list */
 #server-games-list { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.8rem; }
