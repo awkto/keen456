@@ -74,7 +74,7 @@ const $ = (id) => document.getElementById(id);
 
 // ---- settings (persisted in localStorage) ----------------------------------
 
-const SETTING_DEFAULTS = { aspect: "AsIs", rendering: "pixelated", touch: "auto" };
+const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto" };
 const getSetting = (k) => localStorage.getItem("keen." + k) || SETTING_DEFAULTS[k];
 const setSetting = (k, v) => localStorage.setItem("keen." + k, v);
 

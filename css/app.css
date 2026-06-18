@@ -213,6 +213,7 @@ html, body {
 .game-stage.touch .touch-controls {
   flex: 1 1 50%;
   min-height: 0;
+  position: relative;            /* anchor the Enter/Esc keys to the corners */
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -266,6 +267,27 @@ html, body {
 }
 .mbtn.active { background: var(--accent); color: #1a1033; }
 
+/* In touch mode, tuck Enter/Esc into the BOTTOM corners (Enter left, Esc right),
+   away from the joystick/action thumbs so they aren't pressed by accident.
+   The container spans the bottom but only the buttons capture taps. */
+.game-stage.touch .menu-keys {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: calc(1.5vw + env(safe-area-inset-bottom));
+  flex-direction: row;
+  justify-content: space-between;
+  gap: 0;
+  padding: 0 4vw;
+  pointer-events: none;
+}
+.game-stage.touch .menu-keys .mbtn {
+  pointer-events: auto;
+  min-width: 11vw;
+  padding: 1.3vw 2.5vw;
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+
 .actions {
   flex: 0 0 auto;
   display: grid;
@@ -283,9 +305,9 @@ html, body {
   color: #1a1033;
   touch-action: none;
 }
-.abtn.pogo  { background: var(--accent2); grid-column: 1; grid-row: 1; }
-.abtn.jump  { background: #6ee06e;        grid-column: 2; grid-row: 1; }
-.abtn.shoot { background: #ff6b6b; grid-column: 1 / -1; justify-self: center; }
+.abtn.shoot { background: #ff6b6b;        grid-column: 1; grid-row: 1; }   /* top-left */
+.abtn.pogo  { background: var(--accent2); grid-column: 2; grid-row: 1; }   /* top-right */
+.abtn.jump  { background: #6ee06e; grid-column: 1 / -1; grid-row: 2; justify-self: center; } /* bottom */
 .abtn.active { filter: brightness(0.7); transform: scale(0.95); }
 
 /* In touch mode, move the js-dos sidebar (save/keyboard/fullscreen/settings) out of
