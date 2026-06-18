@@ -100,6 +100,11 @@ function launch(url, key) {
   if (touch) {
     $("game-stage").classList.add("touch");
     $("touch-controls").hidden = false;
+    // Size the game pane to the chosen display aspect so the canvas fills it
+    // with no black letterbox below (the freed height goes to the controls).
+    const AR = { "4/3": "4 / 3", "5/4": "5 / 4", "16/10": "16 / 10", "16/9": "16 / 9",
+                 "1/1": "1 / 1", "AsIs": "16 / 10", "Fit": "16 / 10" };
+    $("dos").style.aspectRatio = AR[getSetting("aspect")] || "4 / 3";
   }
 
   // Dos() boots DOSBox-WASM into #dos and loads the .jsdos bundle at `url`.

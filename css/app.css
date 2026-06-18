@@ -162,8 +162,8 @@ html, body {
 .game-stage.touch .kbd-btn {
   display: block;
   position: fixed;
-  bottom: calc(8px + env(safe-area-inset-bottom));
-  left: 8px;
+  bottom: calc(2vw + env(safe-area-inset-bottom));   /* bottom-left, just right of ESC */
+  left: 17vw;
   z-index: 1001;
   background: #000a;
   color: #fff;
@@ -243,11 +243,14 @@ html, body {
   touch-action: none;
 }
 
-/* When touch mode is active, split the stage: top half game, bottom half controls. */
+/* When touch mode is active, split the stage vertically. The game pane is sized
+   to the game's own aspect ratio (set inline by launch() to match renderAspect),
+   so the canvas fills it with no black letterbox below; the controls take ALL
+   the remaining height (taller, shifted up to meet the game). */
 .game-stage.touch { flex-direction: column; }
-.game-stage.touch .dos-window { flex: 1 1 50%; min-height: 0; }
+.game-stage.touch .dos-window { flex: 0 0 auto; width: 100%; height: auto; min-height: 0; }
 .game-stage.touch .touch-controls {
-  flex: 1 1 50%;
+  flex: 1 1 auto;
   min-height: 0;
   position: relative;            /* anchor the Enter/Esc keys to the corners */
   display: flex;
@@ -316,8 +319,8 @@ html, body {
   font-size: 0.78rem;
   opacity: 0.75;
 }
-.game-stage.touch .menu-keys .mbtn[data-keys="256"] {   /* ESC  -> top-left */
-  top: 2vw;
+.game-stage.touch .menu-keys .mbtn[data-keys="256"] {   /* ESC  -> bottom-left */
+  bottom: calc(2vw + env(safe-area-inset-bottom));
   left: 3vw;
 }
 .game-stage.touch .menu-keys .mbtn[data-keys="257"] {   /* Enter -> bottom-right */
