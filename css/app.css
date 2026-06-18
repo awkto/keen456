@@ -230,6 +230,7 @@ html, body {
 .stick {
   position: relative;
   flex: 0 0 auto;
+  margin-left: 4vw;       /* nudge the joystick slightly right of the edge */
   width: min(34vw, 40vh);
   height: min(34vw, 40vh);
   border-radius: 50%;
