@@ -204,6 +204,37 @@ html, body {
 #footer a { color: var(--accent2); }
 #footer .legal { font-size: 0.75rem; opacity: 0.8; margin-top: 0.4rem; }
 
+/* ---- saved games panel ---- */
+.saves-card { grid-column: 1 / -1; }
+.save-info { font-size: 0.9rem; color: var(--muted); margin: 0.4rem 0; }
+#saves-list { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.7rem 0; }
+.save-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  background: #0003;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.8rem;
+  font-size: 0.95rem;
+}
+.save-row small { color: var(--muted); }
+.save-row-btns { display: flex; gap: 0.4rem; flex: 0 0 auto; }
+.save-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.save-btn {
+  padding: 0.5rem 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.save-btn:hover:not(:disabled) { filter: brightness(1.15); }
+.save-btn.danger { background: #3a1a1f; color: #ff9a9a; }
+
 /* ---- settings panel ---- */
 .settings-card { grid-column: 1 / -1; }
 .setting {

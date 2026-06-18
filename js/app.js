@@ -70,8 +70,72 @@ let pendingFiles = null;    // [{name, data:Uint8Array}]
 let pendingRunCmd = null;
 let pendingKey = null;      // persistence key for the BYO episode
 const launchable = {};      // key -> bundle url (server games + bundled demo) for deep-links
+let currentKey = null;      // episode key of the running game (for autosave)
+let savedBlobUrl = null;    // object URL of a snapshot we booted from
+let saveTimer = null;       // periodic autosave interval
 
 const $ = (id) => document.getElementById(id);
+
+// ---- persistent saves (self-managed) ---------------------------------------
+// js-dos autoSave is unreliable here, so we snapshot the emulator filesystem
+// (ci.persist(false) → a standalone .jsdos bundle holding the game's saves +
+// config) into our own IndexedDB, keyed per episode. We boot from that snapshot
+// next time so progress is restored, and the launcher can Download/Upload/Delete
+// it (portable across browsers/devices). Same approach as the zeliard build.
+const SAVE_DB = "keen-saves";
+const SAVE_STORE = "blobs";
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open(SAVE_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(SAVE_STORE);
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+async function saveGet(key) {
+  try { const db = await idbOpen();
+    return await new Promise((res) => {
+      const t = db.transaction(SAVE_STORE, "readonly").objectStore(SAVE_STORE).get(key);
+      t.onsuccess = () => res(t.result || null); t.onerror = () => res(null);
+    });
+  } catch (_) { return null; }
+}
+async function savePut(key, blob) {
+  try { const db = await idbOpen();
+    return await new Promise((res) => {
+      const t = db.transaction(SAVE_STORE, "readwrite").objectStore(SAVE_STORE).put(blob, key);
+      t.onsuccess = () => res(true); t.onerror = () => res(false);
+    });
+  } catch (_) { return false; }
+}
+async function saveDelete(key) {
+  try { const db = await idbOpen();
+    await new Promise((res) => {
+      const t = db.transaction(SAVE_STORE, "readwrite").objectStore(SAVE_STORE).delete(key);
+      t.onsuccess = () => res(); t.onerror = () => res();
+    });
+  } catch (_) {}
+}
+async function saveListKeys() {
+  try { const db = await idbOpen();
+    return await new Promise((res) => {
+      const t = db.transaction(SAVE_STORE, "readonly").objectStore(SAVE_STORE).getAllKeys();
+      t.onsuccess = () => res(t.result || []); t.onerror = () => res([]);
+    });
+  } catch (_) { return []; }
+}
+
+let capturing = false;
+// Snapshot the running emulator's filesystem into our IndexedDB under `key`.
+async function captureSave(key) {
+  if (!gameCi || typeof gameCi.persist !== "function" || capturing || !key) return;
+  capturing = true;
+  try {
+    const u = await gameCi.persist(false);   // full standalone .jsdos bundle
+    if (u && u.length) await savePut(key, new Blob([u], { type: "application/octet-stream" }));
+  } catch (_) {} finally { capturing = false; }
+}
 
 // ---- settings (persisted in localStorage) ----------------------------------
 
@@ -90,11 +154,12 @@ function touchEnabled() {
 
 // `key` scopes the IndexedDB save storage so saves persist across reloads
 // (stable per episode, even when BYO bundles get fresh blob: URLs each time).
-function launch(url, key) {
+async function launch(url, key) {
   $("launcher").hidden = true;
   $("topbar").hidden = true;
   $("footer").hidden = true;
   $("game-stage").hidden = false;
+  currentKey = key;
 
   const touch = touchEnabled();
   if (touch) {
@@ -107,19 +172,28 @@ function launch(url, key) {
     $("dos").style.aspectRatio = AR[getSetting("aspect")] || "4 / 3";
   }
 
-  // Dos() boots DOSBox-WASM into #dos and loads the .jsdos bundle at `url`.
+  // Boot from our saved snapshot for this episode if we have one (restores
+  // progress); otherwise boot the supplied bundle.
+  let bootUrl = url;
+  const saved = await saveGet(key);
+  if (saved) { savedBlobUrl = URL.createObjectURL(saved); bootUrl = savedBlobUrl; }
+
+  // Dos() boots DOSBox-WASM into #dos and loads the .jsdos bundle.
   dosCi = Dos($("dos"), {
-    url,
+    url: bootUrl,
     key,
     autoStart: true,
-    autoSave: true,            // auto-persist FS changes (savegames/config) to IndexedDB
+    autoSave: false,           // we persist explicitly via captureSave()
     backend: "dosbox",
     noCloud: true,             // self-contained: no cloud account prompts
-    thinSidebar: touch,        // slim the js-dos sidebar on touch (CSS moves it to the top)
+    thinSidebar: touch,        // slim the js-dos sidebar on touch (CSS hides it)
     renderAspect: getSetting("aspect"),
     imageRendering: getSetting("rendering"),
     onEvent: (event, arg) => {
-      if (event === "ci-ready") gameCi = arg;   // command interface for touch input
+      if (event === "ci-ready") {
+        gameCi = arg;          // command interface for touch input + persist()
+        try { if (/[?&#]debug/.test(location.href)) window.__keenCi = arg; } catch (_) {}
+      }
       if (event === "error") {
         alert("js-dos error:\n\n" + arg +
           "\n\nIf you supplied your own files, double-check they are the right episode's " +
@@ -128,14 +202,27 @@ function launch(url, key) {
     },
   });
 
+  // Safety-net autosave while playing (covers the game's in-menu saves).
+  clearInterval(saveTimer);
+  saveTimer = setInterval(() => captureSave(key), 30000);
+
   // Give the running game its own URL (#keen<ep>) so the browser Back button /
   // system back gesture quits it — this replaces the old on-screen Quit button.
   if (location.hash !== "#" + key) history.pushState({ playing: key }, "", "#" + key);
 }
 
-// Back leaves the game's #hash and fires popstate — reload to tear the emulator
-// down cleanly and return to the launcher.
-window.addEventListener("popstate", () => { if (dosCi) location.reload(); });
+// Back leaves the game's #hash and fires popstate — snapshot progress, then
+// reload to tear the emulator down cleanly and return to the launcher.
+window.addEventListener("popstate", async () => {
+  if (!dosCi) return;
+  clearInterval(saveTimer);
+  await captureSave(currentKey);
+  location.reload();
+});
+// Extra safety: snapshot when the tab is hidden/backgrounded (covers closing it).
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && dosCi) captureSave(currentKey);
+});
 
 // Deep-link: opening the page at #keen<ep> auto-launches that game (server games
 // + the bundled demo). We normalize to the base URL first so a launcher entry
@@ -408,6 +495,71 @@ function setupTouchControls() {
   window.addEventListener("blur", releaseAll);
 }
 
+// ---- launcher: saved-game download / upload / delete -----------------------
+
+const VALID_EPISODES = [4, 5, 6];
+const epOfKey = (k) => (String(k).match(/^keen([1-9])$/) || [])[1];
+
+async function refreshSavesUI() {
+  const list = $("saves-list");
+  if (!list) return;
+  const keys = (await saveListKeys()).filter((k) => /^keen[1-9]$/.test(k)).sort();
+  if (!keys.length) {
+    list.innerHTML = `<p class="save-info">No saved games yet — your progress is stored here automatically once you play.</p>`;
+    return;
+  }
+  const rows = await Promise.all(keys.map(async (k) => {
+    const b = await saveGet(k);
+    const kb = b ? Math.round(b.size / 1024) : 0;
+    return `<div class="save-row"><span>Keen ${epOfKey(k)} <small>(${kb}&nbsp;KB)</small></span>` +
+      `<span class="save-row-btns">` +
+      `<button class="save-btn" data-dl="${k}">⤓ Download</button>` +
+      `<button class="save-btn danger" data-del="${k}" aria-label="Delete">🗑</button></span></div>`;
+  }));
+  list.innerHTML = rows.join("");
+  list.querySelectorAll("[data-dl]").forEach((b) => b.addEventListener("click", () => downloadSave(b.getAttribute("data-dl"))));
+  list.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => deleteSaveUI(b.getAttribute("data-del"))));
+}
+
+async function downloadSave(key) {
+  const blob = await saveGet(key);
+  if (!blob) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = key + "-save.jsdos";   // a .jsdos is a zip of the save/game files
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+async function deleteSaveUI(key) {
+  if (!confirm(`Delete the saved game for Keen ${epOfKey(key)} in this browser? This cannot be undone.`)) return;
+  await saveDelete(key);
+  await refreshSavesUI();
+}
+
+// Import a downloaded save. Detect the episode from the filename, else by
+// sniffing a .CKx file inside the .jsdos (zip) bundle.
+async function importSave(file) {
+  if (!file) return;
+  const buf = new Uint8Array(await file.arrayBuffer());
+  let ep = (file.name.match(/keen[ _-]?([1-9])/i) || [])[1];
+  if (!ep) {
+    try {
+      for (const n of Object.keys(fflate.unzipSync(buf))) {
+        const m = n.match(/\.CK([1-9])$/i); if (m) { ep = m[1]; break; }
+      }
+    } catch (_) {}
+  }
+  ep = parseInt(ep, 10);
+  if (!VALID_EPISODES.includes(ep)) {
+    alert("Couldn't tell which episode this save is for — expected a Keen " + VALID_EPISODES.join("/") + " save.");
+    return;
+  }
+  await savePut("keen" + ep, new Blob([buf], { type: "application/octet-stream" }));
+  await refreshSavesUI();
+  alert("Save imported for Keen " + ep + ". It loads next time you play that episode.");
+}
+
 // ---- settings UI -----------------------------------------------------------
 
 function setupSettings() {
@@ -466,6 +618,12 @@ window.addEventListener("DOMContentLoaded", () => {
   setupTouchControls();
   launchable["keen4"] = "games/keen4.jsdos";   // bundled demo (overridden by server manifest if present)
   setupServerMode().then(deepLink);            // deep-link after the manifest (if any) has loaded
+
+  refreshSavesUI();
+  $("save-upload").addEventListener("click", () => $("save-file-input").click());
+  $("save-file-input").addEventListener("change", (e) => {
+    const f = e.target.files[0]; e.target.value = ""; importSave(f);
+  });
 
   $("play-keen4").addEventListener("click", () => launch("games/keen4.jsdos", "keen4"));
   $("play-byo").addEventListener("click", playByo);
