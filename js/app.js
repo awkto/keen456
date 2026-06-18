@@ -313,9 +313,65 @@ function setupJoystick() {
   base.addEventListener("pointercancel", (e) => { if (e.pointerId === pid) reset(); });
 }
 
+// On-screen keyboard: a hidden <input> whose focus raises the device soft
+// keyboard. We forward typed characters/keys to the emulator (held briefly so
+// the emulator polls them). Lets you type save-game names on touch devices.
+function setupKeyboard() {
+  const btn = $("kbd-btn");
+  const proxy = $("kbd-proxy");
+  if (!btn || !proxy) return;
+
+  const SHIFT = 340;                 // GLFW left shift
+  const SPECIAL = {                  // keys that arrive as keydown (even on Android)
+    Enter: 257, Backspace: 259, Tab: 258, Escape: 256,
+    ArrowUp: 265, ArrowDown: 264, ArrowLeft: 263, ArrowRight: 262,
+  };
+  const PUNCT = { "-":45,"=":61,"[":91,"]":93,";":59,"'":39,",":44,".":46,"/":47,"\\":92,"`":96 };
+
+  // press a key, then release it a few frames later so the emulator registers it
+  const hold = (code, shift) => {
+    if (shift) sendKey(SHIFT, true);
+    sendKey(code, true);
+    setTimeout(() => { sendKey(code, false); if (shift) sendKey(SHIFT, false); }, 50);
+  };
+  const typeChar = (ch) => {
+    if (ch === " ") return hold(32);
+    if (ch === "\n") return hold(257);
+    const u = ch.toUpperCase().charCodeAt(0);
+    if ((u >= 65 && u <= 90) || (u >= 48 && u <= 57)) return hold(u, ch >= "A" && ch <= "Z");
+    if (PUNCT[ch] != null) return hold(PUNCT[ch]);
+  };
+
+  const toggle = (e) => {
+    e.preventDefault();
+    if (document.activeElement === proxy) { proxy.blur(); btn.classList.remove("active"); }
+    else { proxy.value = ""; proxy.focus(); btn.classList.add("active"); }
+  };
+  btn.addEventListener("pointerup", toggle);
+  btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  proxy.addEventListener("blur", () => btn.classList.remove("active"));
+
+  // Printable characters: soft keyboards fire `beforeinput` (keydown is unreliable
+  // on Android — it reports keyCode 229). Keep the field empty after each char.
+  proxy.addEventListener("beforeinput", (e) => {
+    if (e.inputType === "insertText" && e.data) { for (const ch of e.data) typeChar(ch); }
+    e.preventDefault();
+    proxy.value = "";
+  });
+  // Enter / Backspace / arrows / Esc: these do fire keydown. stopPropagation so
+  // js-dos's own key handler doesn't also process them (would double the input).
+  proxy.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (SPECIAL[e.key] != null) { hold(SPECIAL[e.key]); e.preventDefault(); }
+  });
+  proxy.addEventListener("keyup", (e) => { e.stopPropagation(); });
+  proxy.addEventListener("keypress", (e) => { e.stopPropagation(); });
+}
+
 function setupTouchControls() {
   document.querySelectorAll("#touch-controls [data-keys]").forEach(bindTouchButton);
   setupJoystick();
+  setupKeyboard();
 
   // Take over touch for the whole control pad: non-passive preventDefault stops
   // long-press selection/callout, double-tap zoom, and scroll across the pad

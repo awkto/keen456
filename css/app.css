@@ -170,6 +170,42 @@ html, body {
 }
 .back-btn:hover { background: #c0392b; }
 
+/* Touch soft-keyboard toggle (top-left, mirrors Quit). Only shown in touch mode. */
+.kbd-btn { display: none; }
+.game-stage.touch .kbd-btn {
+  display: block;
+  position: fixed;
+  top: 10px;
+  left: 12px;
+  z-index: 1001;
+  background: #000a;
+  color: #fff;
+  border: 1px solid #fff5;
+  border-radius: 8px;
+  padding: 0.4rem 0.7rem;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.kbd-btn.active { background: var(--accent2); color: #1a1033; }
+/* Off-screen but focusable, so focusing it raises the device soft keyboard.
+   font-size 16px avoids iOS zoom; transparent so it never shows a caret/text. */
+.kbd-proxy {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font-size: 16px;
+  color: transparent;
+  background: transparent;
+  caret-color: transparent;
+}
+
 #footer {
   text-align: center;
   padding: 1.5rem 1rem 2.5rem;
