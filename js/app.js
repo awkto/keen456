@@ -220,6 +220,9 @@ function bindTouchButton(btn) {
 
   const press = (e) => {
     e.preventDefault();
+    // Capture the pointer so this button keeps every move/up event for the
+    // whole hold — the OS can't reroute it into a long-press gesture.
+    try { btn.setPointerCapture(e.pointerId); } catch (_) {}
     btn.classList.add("active");
     keys.forEach((k) => sendKey(k, true));
     if (e.pointerId != null) activeByPointer.set(e.pointerId, keys);
@@ -233,8 +236,12 @@ function bindTouchButton(btn) {
   btn.addEventListener("pointerdown", press);
   btn.addEventListener("pointerup", release);
   btn.addEventListener("pointercancel", release);
-  btn.addEventListener("pointerleave", release);
+  btn.addEventListener("lostpointercapture", release);
+  // Kill the browser's long-press behaviours (context menu, text selection,
+  // iOS callout) that otherwise fire pointercancel mid-hold and drop the keys —
+  // this is what made a held super-jump collapse into a tiny pogo bounce.
   btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  btn.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
 }
 
 // Virtual joystick -> arrow keys (8-way). Removes the dead center of a d-pad.
@@ -296,6 +303,16 @@ function setupJoystick() {
 function setupTouchControls() {
   document.querySelectorAll("#touch-controls [data-keys]").forEach(bindTouchButton);
   setupJoystick();
+
+  // Take over touch for the whole control pad: non-passive preventDefault stops
+  // long-press selection/callout, double-tap zoom, and scroll across the pad
+  // (incl. the joystick and the gaps between buttons).
+  const pad = $("touch-controls");
+  if (pad) {
+    pad.addEventListener("contextmenu", (e) => e.preventDefault());
+    pad.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+    pad.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+  }
   // Safety net: if a pointer is lost (window blur, etc.), release everything.
   const releaseAll = () => {
     activeByPointer.forEach((keys) => keys.forEach((k) => sendKey(k, false)));

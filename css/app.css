@@ -207,6 +207,17 @@ html, body {
 /* ---- touch controls (mobile split view) ---- */
 .touch-controls { display: none; }
 
+/* Suppress native long-press behaviours on every control element so a held
+   button (e.g. the pogo super-jump) is never interrupted by a callout/selection
+   gesture that would cancel the touch. */
+.touch-controls, .touch-controls * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+
 /* When touch mode is active, split the stage: top half game, bottom half controls. */
 .game-stage.touch { flex-direction: column; }
 .game-stage.touch .dos-window { flex: 1 1 50%; min-height: 0; }
