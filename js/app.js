@@ -89,7 +89,7 @@ function touchEnabled() {
 
 // `key` scopes the IndexedDB save storage so saves persist across reloads
 // (stable per episode, even when BYO bundles get fresh blob: URLs each time).
-function launch(url, key) {
+function launch(url, key, backend) {
   $("launcher").hidden = true;
   $("topbar").hidden = true;
   $("footer").hidden = true;
@@ -107,7 +107,10 @@ function launch(url, key) {
     key,
     autoStart: true,
     autoSave: true,            // auto-persist FS changes (savegames/config) to IndexedDB
-    backend: "dosbox",
+    // Keen 6 launches via its KEEN6.COM RawCopy loader to skip the manual-word
+    // copy protection; that in-memory patch only lands on the DOSBox-X backend
+    // (the plain "dosbox" backend still shows the "check your manual" nag).
+    backend: backend || "dosbox",
     noCloud: true,             // self-contained: no cloud account prompts
     thinSidebar: touch,        // slim the js-dos sidebar on touch (CSS moves it to the top)
     renderAspect: getSetting("aspect"),
@@ -206,7 +209,7 @@ function playByo() {
   if (!pendingFiles) return;
   const blob = buildBundleBlob(pendingFiles, pendingRunCmd);
   pendingBlobUrl = URL.createObjectURL(blob);
-  launch(pendingBlobUrl, pendingKey);
+  launch(pendingBlobUrl, pendingKey, pendingKey === "keen6" ? "dosboxX" : "dosbox");
 }
 
 // ---- touch controls --------------------------------------------------------
@@ -383,7 +386,8 @@ async function setupServerMode() {
       btn.className = "play-btn";
       const title = g.title || EPISODE_TITLES[g.episode] || "";
       btn.textContent = `▶ Play Keen ${g.episode}${title ? " — " + title : ""}`;
-      btn.addEventListener("click", () => launch(g.bundle, "keen" + g.episode));
+      btn.addEventListener("click", () => launch(g.bundle, "keen" + g.episode,
+        g.episode == 6 ? "dosboxX" : "dosbox"));
       list.appendChild(btn);
     });
   $("server-games").hidden = false;
