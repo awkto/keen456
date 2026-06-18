@@ -28,6 +28,18 @@ build_episode() {
   exename=$(basename "$exe" | tr '[:lower:]' '[:upper:]')
   cp "$exe" "$work/$exename"
 
+  # Prefer a KEEN<ep>.COM loader if present. Keen 6 ships a RawCopy TSR-patch
+  # loader (KEEN6.COM) that boots the game past the "creature question" copy
+  # protection; the original DOSBox config launched it instead of the EXE.
+  runcmd="$exename"
+  com=$(find "$src" -maxdepth 1 -iname "KEEN$ep*.COM" 2>/dev/null | head -1)
+  if [ -n "$com" ]; then
+    comname=$(basename "$com" | tr '[:lower:]' '[:upper:]')
+    cp "$com" "$work/$comname"
+    runcmd="$comname"
+    echo "[keen456] Keen $ep: using loader $comname (copy-protection bypass)"
+  fi
+
   cat > "$work/.jsdos/dosbox.conf" <<CONF
 [dosbox]
 machine=svga_s3
@@ -53,11 +65,14 @@ umb=true
 echo off
 mount c .
 c:
-$exename
+$runcmd
 CONF
   printf '[cpu]\ncycles=auto\n' > "$work/dosbox.conf"
 
-  ( cd "$work" && zip -rq -X "$GAMES/keen$ep.jsdos" .jsdos AUDIO.CK$ep EGAGRAPH.CK$ep GAMEMAPS.CK$ep "$exename" dosbox.conf )
+  # rm first: zip appends to an existing archive (the image ships keen4.jsdos),
+  # which would corrupt the bundle when rebuilding Keen 4 from /data.
+  rm -f "$GAMES/keen$ep.jsdos"
+  ( cd "$work" && zip -rq -X "$GAMES/keen$ep.jsdos" . )
   rm -rf "$work"
   return 0
 }

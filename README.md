@@ -29,8 +29,10 @@ Select (or drop) these files for the episode you own:
 | `GAMEMAPS.CK?` | `GAMEMAPS.CK5` |
 | the game `.EXE` | `KEEN5E.EXE`  |
 
-> **Keen 6 note:** the retail game shows a "Creature Question" copy-protection prompt at startup;
-> the answers are in the game manual. (Bypassing it is an Omnispeak feature — see the roadmap.)
+> **Keen 6 note:** the retail game shows a "Creature Question" copy-protection prompt at startup
+> (the answers are in the game manual). If your copy includes a `KEEN6.COM` loader (a RawCopy
+> TSR patch that boots past the prompt), include it alongside the data files — the launcher and the
+> server/kiosk mode both detect a `KEEN<ep>.COM` loader and run it instead of the `.EXE`.
 
 ## Controls & settings
 

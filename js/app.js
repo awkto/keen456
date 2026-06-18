@@ -154,6 +154,9 @@ async function handleFiles(fileList) {
   const has = (re) => names.some((n) => re.test(n));
   const exe = files.find((f) => /\.EXE$/.test(f.name) && /KEEN/.test(f.name))
            || files.find((f) => /\.EXE$/.test(f.name));
+  // A KEEN*.COM loader (e.g. Keen 6's RawCopy TSR patch) boots past the
+  // "creature question" copy protection — prefer it as the run command.
+  const com = files.find((f) => /^KEEN.*\.COM$/.test(f.name));
 
   // Which episode? Derive from the CKx extension present.
   const epMatch = names.map((n) => n.match(/\.CK([456])$/)).find(Boolean);
@@ -173,14 +176,16 @@ async function handleFiles(fileList) {
   const allOk = checks.every(([ok]) => ok);
   let extra = "";
   if (allOk && episode === "6") {
-    extra = `<div style="margin-top:.5rem">⚠ Keen 6 shows a "Creature Question" copy-protection prompt at startup — the answers are in the game's manual. (Bypassing it is a Path 2 / Omnispeak feature, not available under DOS emulation.)</div>`;
+    extra = com
+      ? `<div class="ok" style="margin-top:.5rem">✓ ${com.name} detected — will boot past the Keen 6 "Creature Question" copy protection.</div>`
+      : `<div style="margin-top:.5rem">⚠ Keen 6 shows a "Creature Question" copy-protection prompt at startup — the answers are in the game's manual. (If your copy includes a <code>KEEN6.COM</code> loader, add it too and it'll be used to skip the prompt.)</div>`;
   }
   status.innerHTML = `<div><strong>Selected ${files.length} file(s)` +
     (episode ? ` — detected Keen ${episode}` : "") + `:</strong></div>` + rows + extra;
 
   if (allOk) {
     pendingFiles = files;
-    pendingRunCmd = exe.name;
+    pendingRunCmd = com ? com.name : exe.name;   // prefer the no-DRM loader
     pendingKey = "keen" + (episode || "x");
     $("play-byo").disabled = false;
   }
