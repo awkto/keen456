@@ -157,15 +157,15 @@ html, body {
 .dos-window { flex: 1; width: 100%; height: 100%; }
 .back-btn {
   position: fixed;
-  top: 10px;
-  right: 12px;
+  top: 6px;
+  right: 6px;
   z-index: 1001;
   background: #000a;
   color: #fff;
   border: 1px solid #fff5;
-  border-radius: 8px;
-  padding: 0.4rem 0.7rem;
-  font-size: 0.9rem;
+  border-radius: 7px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.72rem;
   cursor: pointer;
 }
 .back-btn:hover { background: #c0392b; }
@@ -175,16 +175,16 @@ html, body {
 .game-stage.touch .kbd-btn {
   display: block;
   position: fixed;
-  top: 10px;
-  left: 12px;
+  top: 6px;
+  left: 6px;
   z-index: 1001;
   background: #000a;
   color: #fff;
   border: 1px solid #fff5;
-  border-radius: 8px;
-  padding: 0.4rem 0.7rem;
-  font-size: 1.1rem;
-  line-height: 1;
+  border-radius: 7px;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.9rem;
+  line-height: 1.4;
   cursor: pointer;
 }
 .kbd-btn.active { background: var(--accent2); color: #1a1033; }
@@ -192,11 +192,13 @@ html, body {
    font-size 16px avoids iOS zoom; transparent so it never shows a caret/text. */
 .kbd-proxy {
   position: fixed;
-  bottom: 0;
+  top: 0;                 /* keep it in view (above the keyboard) so focusing it
+                             doesn't make the browser scroll the page up */
   left: 50%;
   width: 1px;
   height: 1px;
   opacity: 0;
+  pointer-events: none;
   border: 0;
   padding: 0;
   margin: 0;
@@ -315,25 +317,25 @@ html, body {
 }
 .mbtn.active { background: var(--accent); color: #1a1033; }
 
-/* In touch mode, tuck Enter/Esc into the BOTTOM corners (Enter left, Esc right),
-   away from the joystick/action thumbs so they aren't pressed by accident.
-   The container spans the bottom but only the buttons capture taps. */
-.game-stage.touch .menu-keys {
-  position: absolute;
-  left: 0; right: 0;
-  bottom: calc(1.5vw + env(safe-area-inset-bottom));
-  flex-direction: row;
-  justify-content: space-between;
-  gap: 0;
-  padding: 0 4vw;
-  pointer-events: none;
-}
+/* In touch mode, place ESC at the top-left of the control pad and Enter at the
+   bottom-right — diagonal, away from the joystick/action thumbs so they aren't
+   pressed by accident. (display:contents lets each button position itself
+   relative to the control pad.) */
+.game-stage.touch .menu-keys { display: contents; }
 .game-stage.touch .menu-keys .mbtn {
-  pointer-events: auto;
+  position: absolute;
   min-width: 11vw;
   padding: 1.3vw 2.5vw;
   font-size: 0.78rem;
   opacity: 0.75;
+}
+.game-stage.touch .menu-keys .mbtn[data-keys="256"] {   /* ESC  -> top-left */
+  top: 2vw;
+  left: 3vw;
+}
+.game-stage.touch .menu-keys .mbtn[data-keys="257"] {   /* Enter -> bottom-right */
+  bottom: calc(2vw + env(safe-area-inset-bottom));
+  right: 3vw;
 }
 
 .actions {
