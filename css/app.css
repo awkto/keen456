@@ -55,6 +55,14 @@ html, body {
 @media (max-width: 720px) {
   #launcher { grid-template-columns: 1fr; }
 }
+/* Small phones: trim horizontal chrome and stack each setting so the
+   <select> spans the row instead of forcing the cards wider than the screen. */
+@media (max-width: 480px) {
+  #launcher { padding: 0 0.6rem 2rem; }
+  .card { padding: 1.1rem 1rem; }
+  .setting { flex-direction: column; align-items: stretch; }
+  .setting select { max-width: none; width: 100%; }
+}
 
 .card {
   background: var(--panel);
@@ -177,13 +185,17 @@ html, body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
   margin: 0.6rem 0;
   color: var(--text);
   font-size: 0.95rem;
 }
 .setting select {
-  flex: 0 1 280px;
+  flex: 1 1 200px;
+  min-width: 0;        /* allow the control to shrink below its longest <option>
+                          (without this it forced ~280px, overflowing phones) */
+  max-width: 280px;
   padding: 0.45rem 0.6rem;
   border-radius: 8px;
   background: #0003;
