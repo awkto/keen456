@@ -69,6 +69,7 @@ let pendingBlobUrl = null;  // object URL for a built bundle, awaiting Play
 let pendingFiles = null;    // [{name, data:Uint8Array}]
 let pendingRunCmd = null;
 let pendingKey = null;      // persistence key for the BYO episode
+const launchable = {};      // key -> bundle url (server games + bundled demo) for deep-links
 
 const $ = (id) => document.getElementById(id);
 
@@ -121,13 +122,23 @@ function launch(url, key) {
       }
     },
   });
+
+  // Give the running game its own URL (#keen<ep>) so the browser Back button /
+  // system back gesture quits it — this replaces the old on-screen Quit button.
+  if (location.hash !== "#" + key) history.pushState({ playing: key }, "", "#" + key);
 }
 
-async function quit() {
-  try { if (dosCi && typeof dosCi.stop === "function") await dosCi.stop(); } catch (_) {}
-  if (pendingBlobUrl) URL.revokeObjectURL(pendingBlobUrl);
-  // Full reload is the most reliable way to tear down the emulator cleanly.
-  location.reload();
+// Back leaves the game's #hash and fires popstate — reload to tear the emulator
+// down cleanly and return to the launcher.
+window.addEventListener("popstate", () => { if (dosCi) location.reload(); });
+
+// Deep-link: opening the page at #keen<ep> auto-launches that game (server games
+// + the bundled demo). We normalize to the base URL first so a launcher entry
+// sits behind the game and Back returns to it.
+function deepLink() {
+  const key = decodeURIComponent((location.hash || "").replace(/^#/, ""));
+  history.replaceState(null, "", location.pathname + location.search);
+  if (key && launchable[key]) launch(launchable[key], key);
 }
 
 // ---- user-supplied data -> .jsdos bundle -----------------------------------
@@ -436,6 +447,7 @@ async function setupServerMode() {
       btn.className = "play-btn";
       const title = g.title || EPISODE_TITLES[g.episode] || "";
       btn.textContent = `▶ Play Keen ${g.episode}${title ? " — " + title : ""}`;
+      launchable["keen" + g.episode] = g.bundle;   // enable deep-link / back routing
       btn.addEventListener("click", () => launch(g.bundle, "keen" + g.episode));
       list.appendChild(btn);
     });
@@ -447,10 +459,10 @@ async function setupServerMode() {
 window.addEventListener("DOMContentLoaded", () => {
   setupSettings();
   setupTouchControls();
-  setupServerMode();
+  launchable["keen4"] = "games/keen4.jsdos";   // bundled demo (overridden by server manifest if present)
+  setupServerMode().then(deepLink);            // deep-link after the manifest (if any) has loaded
 
   $("play-keen4").addEventListener("click", () => launch("games/keen4.jsdos", "keen4"));
-  $("back-btn").addEventListener("click", quit);
   $("play-byo").addEventListener("click", playByo);
 
   const dz = $("dropzone");
