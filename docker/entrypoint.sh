@@ -80,7 +80,11 @@ CONF
 games_json=""
 add_game() {
   [ -n "$games_json" ] && games_json="$games_json,"
-  games_json="$games_json{\"episode\":$1,\"bundle\":\"games/keen$1.jsdos\"}"
+  # Append a content hash to the bundle URL so js-dos (which caches bundles by
+  # URL in IndexedDB) re-fetches whenever the data changes — otherwise returning
+  # players keep running a stale cached bundle (e.g. the old Keen 6 EXE).
+  h=$(md5sum "$GAMES/keen$1.jsdos" 2>/dev/null | cut -c1-8)
+  games_json="$games_json{\"episode\":$1,\"bundle\":\"games/keen$1.jsdos?v=$h\"}"
 }
 
 if [ -d "$DATA" ]; then
