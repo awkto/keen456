@@ -394,16 +394,17 @@ html, body {
 }
 .statebtn {
   min-width: 13vw;
-  padding: 1.3vw 3vw;
+  padding: 0.4vw 3vw;
   border: 1px solid var(--border);
-  background: #143a2f;
-  color: var(--good);
   border-radius: 9px;
   font-weight: 800;
-  font-size: 0.78rem;
+  font-size: 1.4rem;
+  line-height: 1.15;
   touch-action: none;
 }
-.statebtn.active { background: var(--good); color: #06200f; }
+.statebtn.save { background: #ff6b6b; color: #1a1033; }   /* ↓ = save state */
+.statebtn.load { background: var(--good); color: #06200f; }  /* ↑ = load state */
+.statebtn.active { filter: brightness(0.72); }
 
 .actions {
   flex: 0 0 auto;
