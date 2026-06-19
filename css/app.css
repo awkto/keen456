@@ -359,14 +359,13 @@ html, body {
   right: 3vw;
 }
 
-/* Y / N confirm keys — top-right (both engines), for the game's keyboard prompts. */
+/* Y / N confirm keys — bottom-right, just left of the Enter key (both engines). */
 .yn-keys { display: none; }
 .game-stage.touch .yn-keys {
   display: flex;
-  position: fixed;
-  top: 6px;
-  right: 6px;
-  z-index: 1001;
+  position: absolute;
+  bottom: calc(2vw + env(safe-area-inset-bottom));
+  right: 16vw;
   gap: 5px;
 }
 .ynbtn {
