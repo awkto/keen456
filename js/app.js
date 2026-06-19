@@ -482,27 +482,46 @@ function backendTrigger(event) {
     try { gameCi.sendBackendEvent({ type: "wc-trigger-event", event }); } catch (_) {}
   }
 }
-function setupStateButtons() {
-  // Fire on pointerdown (the pad's touchstart preventDefault suppresses clicks).
-  const tap = (btn, fn) => {
+// Realtime save states behind a 💾 popup (DOSBox-X). Tapping 💾 opens a Save/Load
+// popup; tapping either runs the emulator state action (and persists) and closes it.
+function setupSaveLoad() {
+  const trigger = $("saveload-btn");
+  const popup = $("saveload-popup");
+  const save = $("savestate-btn");
+  const load = $("loadstate-btn");
+  if (!trigger || !popup) return;
+
+  const isOpen = () => popup.classList.contains("open");
+  const open = () => { popup.hidden = false; popup.classList.add("open"); };
+  const close = () => { popup.classList.remove("open"); popup.hidden = true; };
+
+  trigger.addEventListener("pointerup", (e) => { e.preventDefault(); isOpen() ? close() : open(); });
+  trigger.addEventListener("contextmenu", (e) => e.preventDefault());
+  trigger.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+
+  const act = (btn, fn) => {
     if (!btn) return;
-    btn.addEventListener("pointerdown", (e) => {
+    btn.addEventListener("pointerup", (e) => {
       e.preventDefault(); btn.classList.add("active"); fn();
-      setTimeout(() => btn.classList.remove("active"), 250);
+      setTimeout(() => btn.classList.remove("active"), 200); close();
     });
     btn.addEventListener("contextmenu", (e) => e.preventDefault());
     btn.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
   };
-  // SAVE: snapshot the exact machine state, then persist it to our storage too.
-  tap($("savestate-btn"), () => { backendTrigger("hand_savestate"); setTimeout(() => captureSave(currentKey), 700); });
-  tap($("loadstate-btn"), () => backendTrigger("hand_loadstate"));
+  act(save, () => { backendTrigger("hand_savestate"); setTimeout(() => captureSave(currentKey), 700); });
+  act(load, () => backendTrigger("hand_loadstate"));
+
+  // Tap outside the popup/trigger to dismiss.
+  document.addEventListener("pointerdown", (e) => {
+    if (isOpen() && !popup.contains(e.target) && !trigger.contains(e.target)) close();
+  }, true);
 }
 
 function setupTouchControls() {
   document.querySelectorAll("#touch-controls [data-keys]").forEach(bindTouchButton);
   setupJoystick();
   setupKeyboard();
-  setupStateButtons();
+  setupSaveLoad();
 
   // Take over touch for the whole control pad: non-passive preventDefault stops
   // long-press selection/callout, double-tap zoom, and scroll across the pad

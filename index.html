@@ -119,11 +119,12 @@
         <button class="ynbtn" data-keys="78">N</button>
       </div>
 
-      <!-- Emulator save states (shown only with the DOSBox-X engine): save/restore
-           the exact machine state anytime. -->
-      <div class="savestate-row" id="savestate-row">
-        <button class="statebtn save" id="savestate-btn" aria-label="Save state">↓</button>
-        <button class="statebtn load" id="loadstate-btn" aria-label="Load state">↑</button>
+      <!-- Realtime save states (DOSBox-X only): the 💾 button opens a Save/Load
+           popup; tapping SAVE/LOAD runs the emulator state action and closes it. -->
+      <button class="saveload-btn" id="saveload-btn" aria-label="Save / Load state">💾</button>
+      <div class="saveload-popup" id="saveload-popup" hidden>
+        <button class="statebtn save" id="savestate-btn" aria-label="Save state">SAVE</button>
+        <button class="statebtn load" id="loadstate-btn" aria-label="Load state">LOAD</button>
       </div>
 
       <div class="menu-keys">

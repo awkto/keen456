@@ -382,28 +382,54 @@ html, body {
 }
 .ynbtn.active { background: var(--accent); color: #1a1033; }
 
-/* Emulator Save/Load state buttons — centre-bottom, only with the DOSBox-X engine. */
-.savestate-row { display: none; }
-.game-stage.touch.xstate .savestate-row {
-  display: flex;
+/* Realtime save states (DOSBox-X only): a 💾 trigger (centre-bottom) opens a
+   Save/Load popup; tapping SAVE/LOAD runs it and closes the popup. */
+.saveload-btn { display: none; }
+.game-stage.touch.xstate .saveload-btn {
+  display: block;
   position: absolute;
   bottom: calc(2vw + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
-  gap: 2vw;
-}
-.statebtn {
+  z-index: 1001;
   min-width: 13vw;
-  padding: 0.4vw 3vw;
+  padding: 0.5vw 3vw;
   border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
   border-radius: 9px;
-  font-weight: 800;
-  font-size: 1.4rem;
-  line-height: 1.15;
+  font-size: 1.25rem;
+  line-height: 1.3;
   touch-action: none;
 }
-.statebtn.save { background: #ff6b6b; color: #1a1033; }   /* ↓ = save state */
-.statebtn.load { background: var(--good); color: #06200f; }  /* ↑ = load state */
+.saveload-btn.active { filter: brightness(1.3); }
+
+.saveload-popup { display: none; }
+.game-stage.touch .saveload-popup.open {
+  display: flex;
+  gap: 4vw;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 13vh;
+  z-index: 1100;
+  padding: 3vw 4vw;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 6px 24px #000a;
+}
+.statebtn {
+  min-width: 26vw;
+  padding: 3.5vw 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-weight: 800;
+  font-size: 1.05rem;
+  touch-action: none;
+}
+.statebtn.save { background: #ff6b6b; color: #1a1033; }   /* save state */
+.statebtn.load { background: var(--good); color: #06200f; }  /* load state */
 .statebtn.active { filter: brightness(0.72); }
 
 .actions {
