@@ -139,7 +139,7 @@ async function captureSave(key) {
 
 // ---- settings (persisted in localStorage) ----------------------------------
 
-const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto" };
+const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto", engine: "dosbox" };
 const getSetting = (k) => localStorage.getItem("keen." + k) || SETTING_DEFAULTS[k];
 const setSetting = (k, v) => localStorage.setItem("keen." + k, v);
 
@@ -160,6 +160,11 @@ async function launch(url, key) {
   $("footer").hidden = true;
   $("game-stage").hidden = false;
   currentKey = key;
+
+  // Emulator engine: DOSBox (default, lighter) or DOSBox-X (adds real-time
+  // save/load states). The xstate class reveals the SAVE/LOAD buttons.
+  const engine = getSetting("engine") === "dosboxX" ? "dosboxX" : "dosbox";
+  $("game-stage").classList.toggle("xstate", engine === "dosboxX");
 
   const touch = touchEnabled();
   if (touch) {
@@ -184,7 +189,7 @@ async function launch(url, key) {
     key,
     autoStart: true,
     autoSave: false,           // we persist explicitly via captureSave()
-    backend: "dosbox",
+    backend: engine,           // "dosbox" (default) or "dosboxX" (save states)
     noCloud: true,             // self-contained: no cloud account prompts
     thinSidebar: touch,        // slim the js-dos sidebar on touch (CSS hides it)
     renderAspect: getSetting("aspect"),
@@ -471,10 +476,33 @@ function setupKeyboard() {
   proxy.addEventListener("keypress", (e) => { e.stopPropagation(); });
 }
 
+// Emulator save states (DOSBox-X only): js-dos triggers these via a backend event.
+function backendTrigger(event) {
+  if (gameCi && typeof gameCi.sendBackendEvent === "function") {
+    try { gameCi.sendBackendEvent({ type: "wc-trigger-event", event }); } catch (_) {}
+  }
+}
+function setupStateButtons() {
+  // Fire on pointerdown (the pad's touchstart preventDefault suppresses clicks).
+  const tap = (btn, fn) => {
+    if (!btn) return;
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault(); btn.classList.add("active"); fn();
+      setTimeout(() => btn.classList.remove("active"), 250);
+    });
+    btn.addEventListener("contextmenu", (e) => e.preventDefault());
+    btn.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+  };
+  // SAVE: snapshot the exact machine state, then persist it to our storage too.
+  tap($("savestate-btn"), () => { backendTrigger("hand_savestate"); setTimeout(() => captureSave(currentKey), 700); });
+  tap($("loadstate-btn"), () => backendTrigger("hand_loadstate"));
+}
+
 function setupTouchControls() {
   document.querySelectorAll("#touch-controls [data-keys]").forEach(bindTouchButton);
   setupJoystick();
   setupKeyboard();
+  setupStateButtons();
 
   // Take over touch for the whole control pad: non-passive preventDefault stops
   // long-press selection/callout, double-tap zoom, and scroll across the pad
@@ -563,7 +591,7 @@ async function importSave(file) {
 // ---- settings UI -----------------------------------------------------------
 
 function setupSettings() {
-  [["set-aspect", "aspect"], ["set-rendering", "rendering"], ["set-touch", "touch"]]
+  [["set-aspect", "aspect"], ["set-rendering", "rendering"], ["set-touch", "touch"], ["set-engine", "engine"]]
     .forEach(([id, key]) => {
       const sel = $(id);
       sel.value = getSetting(key);

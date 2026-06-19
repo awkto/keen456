@@ -10,7 +10,7 @@
   <script src="https://v8.js-dos.com/latest/js-dos.js"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=18">
+  <link rel="stylesheet" href="css/app.css?v=19">
 </head>
 <body>
   <header id="topbar">
@@ -93,6 +93,12 @@
           <option value="off">Off</option>
         </select>
       </label>
+      <label class="setting">Engine
+        <select id="set-engine">
+          <option value="dosbox">DOSBox — default, lighter</option>
+          <option value="dosboxX">DOSBox-X — real-time Save/Load states</option>
+        </select>
+      </label>
     </section>
   </main>
 
@@ -105,6 +111,19 @@
     <div id="touch-controls" class="touch-controls" hidden>
       <div class="stick" id="stick" aria-label="movement joystick">
         <div class="stick-knob" id="stick-knob"></div>
+      </div>
+
+      <!-- Y / N for the game's keyboard confirm prompts (top-right). -->
+      <div class="yn-keys" id="yn-keys">
+        <button class="ynbtn" data-keys="89">Y</button>
+        <button class="ynbtn" data-keys="78">N</button>
+      </div>
+
+      <!-- Emulator save states (shown only with the DOSBox-X engine): save/restore
+           the exact machine state anytime. -->
+      <div class="savestate-row" id="savestate-row">
+        <button class="statebtn" id="savestate-btn" aria-label="Save state">SAVE</button>
+        <button class="statebtn" id="loadstate-btn" aria-label="Load state">LOAD</button>
       </div>
 
       <div class="menu-keys">
@@ -141,6 +160,6 @@
     </p>
   </footer>
 
-  <script src="js/app.js?v=20"></script>
+  <script src="js/app.js?v=21"></script>
 </body>
 </html>

@@ -359,6 +359,53 @@ html, body {
   right: 3vw;
 }
 
+/* Y / N confirm keys — top-right (both engines), for the game's keyboard prompts. */
+.yn-keys { display: none; }
+.game-stage.touch .yn-keys {
+  display: flex;
+  position: fixed;
+  top: 6px;
+  right: 6px;
+  z-index: 1001;
+  gap: 5px;
+}
+.ynbtn {
+  min-width: 9vw;
+  padding: 0.12rem 0.5rem;
+  border: 1px solid #fff5;
+  background: #000a;
+  color: #fff;
+  border-radius: 7px;
+  font-weight: 700;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  touch-action: none;
+}
+.ynbtn.active { background: var(--accent); color: #1a1033; }
+
+/* Emulator Save/Load state buttons — centre-bottom, only with the DOSBox-X engine. */
+.savestate-row { display: none; }
+.game-stage.touch.xstate .savestate-row {
+  display: flex;
+  position: absolute;
+  bottom: calc(2vw + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  gap: 2vw;
+}
+.statebtn {
+  min-width: 13vw;
+  padding: 1.3vw 3vw;
+  border: 1px solid var(--border);
+  background: #143a2f;
+  color: var(--good);
+  border-radius: 9px;
+  font-weight: 800;
+  font-size: 0.78rem;
+  touch-action: none;
+}
+.statebtn.active { background: var(--good); color: #06200f; }
+
 .actions {
   flex: 0 0 auto;
   display: grid;
