@@ -220,6 +220,9 @@ html, body {
   font-size: 0.95rem;
 }
 .save-row small { color: var(--muted); }
+.save-row.game { flex-direction: column; align-items: stretch; gap: 0.5rem; }
+.save-row.game .play-btn { margin-top: 0; }
+.save-meta { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
 .save-row-btns { display: flex; gap: 0.4rem; flex: 0 0 auto; }
 .save-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
 .save-btn {

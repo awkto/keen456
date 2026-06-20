@@ -564,17 +564,24 @@ async function refreshSavesUI() {
   if (!list) return;
   const keys = (await saveListKeys()).filter((k) => /^keen[1-9]$/.test(k)).sort();
   if (!keys.length) {
-    list.innerHTML = `<p class="save-info">No saved games yet — your progress is stored here automatically once you play.</p>`;
+    list.innerHTML = `<p class="save-info">No games saved in this browser yet — play the demo or upload your own data, and it'll appear here ready to play.</p>`;
     return;
   }
+  // Persisted episodes (played or uploaded) are surfaced as prominent "Play" game
+  // buttons — the same presentation as detected server games — so an uploaded game
+  // is a first-class, click-to-play option that survives reloads (no re-upload).
   const rows = await Promise.all(keys.map(async (k) => {
+    const ep = epOfKey(k);
+    const title = EPISODE_TITLES[ep] || "";
     const b = await saveGet(k);
     const kb = b ? Math.round(b.size / 1024) : 0;
-    return `<div class="save-row"><span>Keen ${epOfKey(k)} <small>(${kb}&nbsp;KB)</small></span>` +
+    return `<div class="save-row game">` +
+      `<button class="play-btn" data-play="${k}">▶ Play Keen ${ep}${title ? " — " + title : ""}</button>` +
+      `<div class="save-meta"><small>Saved in this browser · ${kb}&nbsp;KB</small>` +
       `<span class="save-row-btns">` +
-      `<button class="save-btn play" data-play="${k}">▶ Play</button>` +
       `<button class="save-btn" data-dl="${k}">⤓ Download</button>` +
-      `<button class="save-btn danger" data-del="${k}" aria-label="Delete">🗑</button></span></div>`;
+      `<button class="save-btn danger" data-del="${k}" aria-label="Delete">🗑</button>` +
+      `</span></div></div>`;
   }));
   list.innerHTML = rows.join("");
   list.querySelectorAll("[data-play]").forEach((b) => b.addEventListener("click", () => playSave(b.getAttribute("data-play"))));
