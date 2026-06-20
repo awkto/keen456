@@ -1,0 +1,20 @@
+# Capacitor / npm
+node_modules/
+# Generated web bundle (built by build-www.sh from the repo root)
+www/
+
+# Android build outputs / local config
+android/.gradle/
+android/build/
+android/app/build/
+android/captures/
+android/.idea/
+android/local.properties
+android/app/release/
+
+# Never commit signing material
+*.keystore
+*.jks
+keystore.properties
+.ks_pass
+.ks_b64

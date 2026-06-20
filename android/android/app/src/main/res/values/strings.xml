@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Commander Keen 4·5·6</string>
+    <string name="title_activity_main">Commander Keen 4·5·6</string>
+    <string name="package_name">com.awkto.keen456</string>
+    <string name="custom_url_scheme">com.awkto.keen456</string>
+</resources>
