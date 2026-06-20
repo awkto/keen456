@@ -134,7 +134,7 @@ async function captureSave(key) {
   try {
     const u = await gameCi.persist(false);   // full standalone .jsdos bundle
     if (u && u.length) await savePut(key, new Blob([u], { type: "application/octet-stream" }));
-  } catch (_) {} finally { capturing = false; }
+  } catch (e) { console.warn("captureSave failed for", key, e); } finally { capturing = false; }
 }
 
 // ---- settings (persisted in localStorage) ----------------------------------
@@ -318,6 +318,11 @@ function playByo() {
   if (!pendingFiles) return;
   const blob = buildBundleBlob(pendingFiles, pendingRunCmd);
   pendingBlobUrl = URL.createObjectURL(blob);
+  // Persist the uploaded game data right away (keyed per episode) so it survives
+  // even if the in-game snapshot never gets a chance to capture — e.g. on Android
+  // the WebView can be frozen/killed before the autosave or quit handler runs.
+  // Later captureSave() calls overwrite this with a full snapshot incl. saves.
+  if (pendingKey) savePut(pendingKey, blob);
   launch(pendingBlobUrl, pendingKey);
 }
 
@@ -682,6 +687,12 @@ window.addEventListener("DOMContentLoaded", () => {
   // Ask the browser/Android WebView to keep our IndexedDB (saved games + uploaded
   // BYO game data) durable so it isn't evicted under storage pressure.
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) {}
+  // On Android (Capacitor) the app being backgrounded is the most reliable moment
+  // to snapshot — visibilitychange isn't always delivered before the WebView freezes.
+  try {
+    const App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+    if (App && App.addListener) App.addListener("pause", () => captureSave(currentKey));
+  } catch (_) {}
   setupSettings();
   setupTouchControls();
   launchable["keen4"] = "games/keen4.jsdos";   // bundled demo (overridden by server manifest if present)
