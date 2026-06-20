@@ -210,6 +210,10 @@ async function launch(url, key) {
   // Safety-net autosave while playing (covers the game's in-menu saves).
   clearInterval(saveTimer);
   saveTimer = setInterval(() => captureSave(key), 30000);
+  // First snapshot a few seconds in, so even a very short BYO session persists
+  // the uploaded game data (the 30s timer / quit handlers might not fire in time,
+  // e.g. swiping the Android app away doesn't always emit visibilitychange).
+  setTimeout(() => captureSave(key), 5000);
 
   // Give the running game its own URL (#keen<ep>) so the browser Back button /
   // system back gesture quits it — this replaces the old on-screen Quit button.
@@ -560,12 +564,23 @@ async function refreshSavesUI() {
     const kb = b ? Math.round(b.size / 1024) : 0;
     return `<div class="save-row"><span>Keen ${epOfKey(k)} <small>(${kb}&nbsp;KB)</small></span>` +
       `<span class="save-row-btns">` +
+      `<button class="save-btn play" data-play="${k}">▶ Play</button>` +
       `<button class="save-btn" data-dl="${k}">⤓ Download</button>` +
       `<button class="save-btn danger" data-del="${k}" aria-label="Delete">🗑</button></span></div>`;
   }));
   list.innerHTML = rows.join("");
+  list.querySelectorAll("[data-play]").forEach((b) => b.addEventListener("click", () => playSave(b.getAttribute("data-play"))));
   list.querySelectorAll("[data-dl]").forEach((b) => b.addEventListener("click", () => downloadSave(b.getAttribute("data-dl"))));
   list.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => deleteSaveUI(b.getAttribute("data-del"))));
+}
+
+// Resume a stored game straight from its IndexedDB snapshot — no re-upload of the
+// data files needed (the snapshot is a full standalone bundle: game data + saves).
+// launch() boots from the snapshot for this key, so the passed URL is a placeholder.
+async function playSave(key) {
+  const blob = await saveGet(key);
+  if (!blob) return;
+  launch(URL.createObjectURL(blob), key);
 }
 
 async function downloadSave(key) {
@@ -661,6 +676,9 @@ async function setupServerMode() {
 // ---- wiring ----------------------------------------------------------------
 
 window.addEventListener("DOMContentLoaded", () => {
+  // Ask the browser/Android WebView to keep our IndexedDB (saved games + uploaded
+  // BYO game data) durable so it isn't evicted under storage pressure.
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) {}
   setupSettings();
   setupTouchControls();
   launchable["keen4"] = "games/keen4.jsdos";   // bundled demo (overridden by server manifest if present)
