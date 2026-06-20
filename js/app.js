@@ -187,6 +187,9 @@ async function launch(url, key) {
   dosCi = Dos($("dos"), {
     url: bootUrl,
     key,
+    // Load the emulator engine from our vendored copy (js/jsdos/emulators/) rather
+    // than the js-dos CDN, so the app works fully offline (incl. inside the APK).
+    pathPrefix: new URL("js/jsdos/emulators/", document.baseURI).href,
     autoStart: true,
     autoSave: false,           // we persist explicitly via captureSave()
     backend: engine,           // "dosbox" (default) or "dosboxX" (save states)

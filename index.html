@@ -5,9 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=overlays-content">
   <title>Commander Keen 4·5·6 — in your browser</title>
   <meta name="description" content="Play Commander Keen: Goodbye, Galaxy! (episodes 4, 5, 6) in your browser. Keen 4 shareware playable instantly; bring your own data for Keen 5 and 6.">
-  <!-- js-dos v8 (DOSBox compiled to WebAssembly) -->
-  <link rel="stylesheet" href="https://v8.js-dos.com/latest/js-dos.css">
-  <script src="https://v8.js-dos.com/latest/js-dos.js"></script>
+  <!-- Commander Keen logo favicon -->
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <!-- js-dos v8.4.0 (DOSBox compiled to WebAssembly) — vendored locally (js/jsdos/)
+       so the app runs fully offline; the emulator wasm path is set via Dos() pathPrefix. -->
+  <link rel="stylesheet" href="js/jsdos/js-dos.css">
+  <script src="js/jsdos/js-dos.js"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
   <link rel="stylesheet" href="css/app.css?v=23">
@@ -161,6 +166,6 @@
     </p>
   </footer>
 
-  <script src="js/app.js?v=23"></script>
+  <script src="js/app.js?v=24"></script>
 </body>
 </html>

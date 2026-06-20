@@ -9,7 +9,7 @@ WWW="$HERE/www"
 rm -rf "$WWW"
 mkdir -p "$WWW"
 cp "$ROOT/index.html" "$WWW/"
-cp -r "$ROOT/css" "$ROOT/js" "$ROOT/games" "$WWW/"
+cp -r "$ROOT/css" "$ROOT/js" "$ROOT/games" "$ROOT/icons" "$WWW/"
 
 echo "bundled web app into $WWW:"
 ls -la "$WWW"
