@@ -17,6 +17,7 @@ COPY index.html /usr/share/nginx/html/index.html
 COPY css/  /usr/share/nginx/html/css/
 COPY js/   /usr/share/nginx/html/js/
 COPY games/ /usr/share/nginx/html/games/
+COPY icons/ /usr/share/nginx/html/icons/
 
 COPY docker/default.conf /etc/nginx/conf.d/default.conf
 COPY docker/entrypoint.sh /entrypoint.sh
