@@ -85,12 +85,12 @@ jobs:
               -Pandroid.injected.signing.store.password="$ANDROID_KEYSTORE_PASSWORD" \
               -Pandroid.injected.signing.key.alias="$ANDROID_KEY_ALIAS" \
               -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD" \
-              -Pandroid.injected.version.code="$GITHUB_RUN_NUMBER" \
-              -Pandroid.injected.version.name="$VERSION"
+              -PappVersionCode="$GITHUB_RUN_NUMBER" \
+              -PappVersionName="$VERSION"
             echo "apk=android/android/app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_OUTPUT"
             echo "signed=true" >> "$GITHUB_OUTPUT"
           else
-            ./gradlew --no-daemon assembleDebug
+            ./gradlew --no-daemon assembleDebug -PappVersionCode="$GITHUB_RUN_NUMBER" -PappVersionName="$VERSION"
             echo "apk=android/android/app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_OUTPUT"
             echo "signed=false" >> "$GITHUB_OUTPUT"
           fi

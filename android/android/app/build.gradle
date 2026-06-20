@@ -7,8 +7,10 @@ android {
         applicationId "com.awkto.keen456"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // Version is supplied by CI from the android-v* tag (see android-apk.yml);
+        // falls back to 1 / "1.0" for local/dev builds.
+        versionCode((project.findProperty("appVersionCode") ?: "1").toString().toInteger())
+        versionName((project.findProperty("appVersionName") ?: "1.0").toString())
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
