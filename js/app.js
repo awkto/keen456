@@ -562,11 +562,16 @@ const epOfKey = (k) => (String(k).match(/^keen([1-9])$/) || [])[1];
 async function refreshSavesUI() {
   const list = $("saves-list");
   if (!list) return;
+  const card = $("saves-card");
   const keys = (await saveListKeys()).filter((k) => /^keen[1-9]$/.test(k)).sort();
   if (!keys.length) {
-    list.innerHTML = `<p class="save-info">No games saved in this browser yet — play the demo or upload your own data, and it'll appear here ready to play.</p>`;
+    // Nothing saved yet: hide the whole card so the launcher leads with the demo /
+    // import options. It reappears at the top once a game is played or imported.
+    if (card) card.hidden = true;
+    list.innerHTML = "";
     return;
   }
+  if (card) card.hidden = false;
   // Persisted episodes (played or uploaded) are surfaced as prominent "Play" game
   // buttons — the same presentation as detected server games — so an uploaded game
   // is a first-class, click-to-play option that survives reloads (no re-upload).
