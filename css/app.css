@@ -472,3 +472,110 @@ html, body {
 
 /* server/kiosk games list */
 #server-games-list { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.8rem; }
+
+/* ---- visual filters (CRT / scanlines) -------------------------------------
+   The overlay is sized to the emulator canvas by JS (left/top/width/height set
+   inline) and sits just above it. mix-blend-mode:multiply darkens-only so the
+   image keeps its colours; pointer-events:none keeps every click/touch going to
+   the game. It's a static, GPU-composited CSS layer — no per-frame JS and
+   nothing in the emulator's render path, so it costs no game performance. */
+.crt-overlay {
+  display: none;
+  position: absolute;
+  z-index: 1002;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+.crt-overlay.on { display: block; }
+
+/* Scanlines — thin dark horizontal lines (screen-space, ~3px pitch). */
+.crt-overlay.scanlines {
+  background-image: repeating-linear-gradient(to bottom,
+    rgba(0,0,0,0) 0, rgba(0,0,0,0) 1px,
+    rgba(0,0,0,.45) 1px, rgba(0,0,0,.45) 3px);
+}
+
+/* CRT — scanlines + a faint RGB shadow-mask + an edge vignette. */
+.crt-overlay.crt {
+  background-image:
+    repeating-linear-gradient(to bottom,
+      rgba(0,0,0,0) 0, rgba(0,0,0,0) 1px,
+      rgba(0,0,0,.5) 1px, rgba(0,0,0,.5) 3px),
+    repeating-linear-gradient(to right,
+      rgba(255,0,0,.14) 0, rgba(255,0,0,.14) 1px,
+      rgba(0,255,0,.14) 1px, rgba(0,255,0,.14) 2px,
+      rgba(0,0,255,.14) 2px, rgba(0,0,255,.14) 3px),
+    radial-gradient(ellipse at center,
+      rgba(0,0,0,0) 55%, rgba(0,0,0,.5) 100%);
+}
+
+/* Aperture grille — vertical RGB stripes, no scanlines. */
+.crt-overlay.aperture {
+  background-image: repeating-linear-gradient(to right,
+    rgba(255,0,0,.2) 0, rgba(255,0,0,.2) 1px,
+    rgba(0,255,0,.2) 1px, rgba(0,255,0,.2) 2px,
+    rgba(0,0,255,.2) 2px, rgba(0,0,255,.2) 3px);
+}
+
+/* LCD — a subtle grid between pixels (handheld look). */
+.crt-overlay.lcd {
+  background-image:
+    repeating-linear-gradient(to bottom,
+      rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px,
+      rgba(0,0,0,.26) 2px, rgba(0,0,0,.26) 3px),
+    repeating-linear-gradient(to right,
+      rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px,
+      rgba(0,0,0,.26) 2px, rgba(0,0,0,.26) 3px);
+}
+
+/* Desktop-only filter switcher. Hidden on touch (the screen's already busy);
+   the overlay engine itself is cross-platform, only this toggle is gated. */
+.filter-btn { display: none; }
+.game-stage:not(.touch) .filter-btn {
+  display: block;
+  position: fixed;
+  top: 0.6rem;
+  right: 0.6rem;
+  z-index: 1003;
+  background: #000a;
+  color: #fff;
+  border: 1px solid #fff5;
+  border-radius: 8px;
+  padding: 0.2rem 0.45rem;
+  font-size: 1.15rem;
+  line-height: 1.2;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity .15s;
+}
+.game-stage:not(.touch) .filter-btn:hover,
+.game-stage:not(.touch) .filter-btn.active { opacity: 1; }
+
+.filter-popup { display: none; }
+.game-stage:not(.touch) .filter-popup.open {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  position: fixed;
+  top: 2.7rem;
+  right: 0.6rem;
+  z-index: 1003;
+  padding: 0.4rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px #000a;
+}
+.filt-opt {
+  text-align: left;
+  padding: 0.4rem 0.85rem;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.filt-opt:hover { background: #ffffff14; }
+.filt-opt.sel { background: var(--accent); color: #1a1033; font-weight: 700; }

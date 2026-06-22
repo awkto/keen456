@@ -15,7 +15,7 @@
   <script src="js/jsdos/js-dos.js"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=24">
+  <link rel="stylesheet" href="css/app.css?v=25">
 </head>
 <body>
   <header id="topbar">
@@ -123,6 +123,23 @@
   <div id="game-stage" class="game-stage" hidden>
     <div id="dos" class="dos-window"></div>
 
+    <!-- Visual filter overlay (scanlines / CRT / …). Sized to the emulator
+         canvas by JS; pointer-events:none so it never blocks input, and it's a
+         plain GPU-composited CSS layer — no per-frame JS, nothing in the
+         emulator's render loop, so it adds no latency. -->
+    <div id="crt-overlay" class="crt-overlay" aria-hidden="true"></div>
+
+    <!-- Desktop-only filter switcher: a small unobtrusive button (top-right,
+         clear of the js-dos sidebar on the left) opens a popup of filters. -->
+    <button id="filter-btn" class="filter-btn" aria-label="Visual filter" title="Visual filter">📺</button>
+    <div id="filter-popup" class="filter-popup" hidden>
+      <button class="filt-opt" data-filter="off">No filter</button>
+      <button class="filt-opt" data-filter="scanlines">Scanlines</button>
+      <button class="filt-opt" data-filter="crt">CRT</button>
+      <button class="filt-opt" data-filter="aperture">Aperture grille</button>
+      <button class="filt-opt" data-filter="lcd">LCD grid</button>
+    </div>
+
     <!-- On-screen controls for touch devices. Sends key events straight to the
          emulator. Keen Galaxy defaults: arrows move, Ctrl=Jump, Alt=Pogo, Space=Fire. -->
     <div id="touch-controls" class="touch-controls" hidden>
@@ -178,6 +195,6 @@
     </p>
   </footer>
 
-  <script src="js/app.js?v=31"></script>
+  <script src="js/app.js?v=32"></script>
 </body>
 </html>

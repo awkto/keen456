@@ -139,7 +139,7 @@ async function captureSave(key) {
 
 // ---- settings (persisted in localStorage) ----------------------------------
 
-const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto", engine: "dosbox", pogohold: "180" };
+const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto", engine: "dosbox", pogohold: "180", filter: "off" };
 const getSetting = (k) => localStorage.getItem("keen." + k) || SETTING_DEFAULTS[k];
 const setSetting = (k, v) => localStorage.setItem("keen." + k, v);
 
@@ -209,6 +209,10 @@ async function launch(url, key) {
       }
     },
   });
+
+  // Apply the chosen visual filter and keep its overlay glued to the canvas.
+  startOverlaySync();
+  applyFilter();
 
   // Safety-net autosave while playing (covers the game's in-menu saves).
   clearInterval(saveTimer);
@@ -552,6 +556,77 @@ function setupSaveLoad() {
   }, true);
 }
 
+// ---- visual filters (CRT / scanlines) --------------------------------------
+// A CSS overlay sized to the emulator canvas — pointer-events:none, no per-frame
+// JS, nothing in the emulator's render path, so it adds no latency. The overlay
+// engine is cross-platform; only the toggle button is desktop-gated for now.
+let overlayStop = null;   // tears down the resize/poll observers on the overlay
+
+// Glue the overlay rectangle to the canvas. game-stage is position:fixed inset:0,
+// so the canvas's viewport rect equals its offset within the (absolute) overlay's
+// containing block.
+function positionOverlay() {
+  const ov = $("crt-overlay");
+  const canvas = document.querySelector("#dos canvas");
+  if (!ov || !canvas) return;
+  const r = canvas.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  ov.style.left = r.left + "px";
+  ov.style.top = r.top + "px";
+  ov.style.width = r.width + "px";
+  ov.style.height = r.height + "px";
+}
+
+function applyFilter() {
+  const ov = $("crt-overlay");
+  if (!ov) return;
+  const f = getSetting("filter");
+  ov.className = "crt-overlay" + (f && f !== "off" ? " on " + f : "");
+  document.querySelectorAll(".filt-opt").forEach((b) =>
+    b.classList.toggle("sel", b.dataset.filter === f));
+  if (f && f !== "off") positionOverlay();
+}
+
+// Keep the overlay aligned as the canvas mounts (async) / resizes / fullscreens.
+function startOverlaySync() {
+  if (overlayStop) return;
+  const dos = $("dos");
+  const ro = (typeof ResizeObserver !== "undefined") ? new ResizeObserver(positionOverlay) : null;
+  if (ro && dos) ro.observe(dos);
+  const onResize = () => positionOverlay();
+  window.addEventListener("resize", onResize);
+  document.addEventListener("fullscreenchange", onResize);
+  // The canvas appears a moment after Dos(); nudge until it's there, then observe it.
+  let tries = 0;
+  const poll = setInterval(() => {
+    const c = document.querySelector("#dos canvas");
+    if (c) { if (ro) ro.observe(c); positionOverlay(); }
+    if (c || ++tries > 25) clearInterval(poll);
+  }, 200);
+  overlayStop = () => {
+    if (ro) ro.disconnect();
+    window.removeEventListener("resize", onResize);
+    document.removeEventListener("fullscreenchange", onResize);
+    clearInterval(poll);
+  };
+}
+
+function setupFilters() {
+  const btn = $("filter-btn");
+  const popup = $("filter-popup");
+  if (!btn || !popup) return;
+  const isOpen = () => popup.classList.contains("open");
+  const open = () => { popup.hidden = false; popup.classList.add("open"); btn.classList.add("active"); };
+  const close = () => { popup.classList.remove("open"); popup.hidden = true; btn.classList.remove("active"); };
+
+  btn.addEventListener("click", (e) => { e.preventDefault(); isOpen() ? close() : open(); });
+  popup.querySelectorAll(".filt-opt").forEach((b) =>
+    b.addEventListener("click", () => { setSetting("filter", b.dataset.filter); applyFilter(); close(); }));
+  document.addEventListener("pointerdown", (e) => {
+    if (isOpen() && !popup.contains(e.target) && !btn.contains(e.target)) close();
+  }, true);
+}
+
 function setupTouchControls() {
   document.querySelectorAll("#touch-controls [data-keys]").forEach(bindTouchButton);
   setupJoystick();
@@ -745,6 +820,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (App && App.addListener) App.addListener("pause", () => captureSave(currentKey));
   } catch (_) {}
   setupSettings();
+  setupFilters();
   setupTouchControls();
   launchable["keen4"] = "games/keen4.jsdos";   // bundled demo (overridden by server manifest if present)
   setupServerMode().then(deepLink);            // deep-link after the manifest (if any) has loaded
