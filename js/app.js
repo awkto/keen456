@@ -344,7 +344,15 @@ function bindTouchButton(btn) {
   // mounted — pressing both on the same frame (from a standstill) just gives a
   // tiny bounce. data-keys order sets the sequence (e.g. pogo first, then jump).
   const stagger = parseInt(btn.dataset.stagger || "0", 10) || 0;
-  let timers = [];
+  // Long-hold auto-tap: if the button is held >= holdMs, then on release we also
+  // send one extra tap of holdTap. Used by POGO — holding for the super pogo+jump
+  // and releasing at the apex auto-taps pogo again to retract it ("put it away").
+  const holdTap = parseInt(btn.dataset.holdTap || "0", 10) || 0;
+  const holdMs = parseInt(btn.dataset.holdMs || "0", 10) || 0;
+  let timers = [];        // staggered key-downs (cancelled on release)
+  let autoTimers = [];    // the post-release auto-tap (cancelled on next press)
+  let pressAt = 0;
+  let released = true;
 
   const press = (e) => {
     e.preventDefault();
@@ -354,16 +362,28 @@ function bindTouchButton(btn) {
     btn.classList.add("active");
     if (e.pointerId != null) activeByPointer.set(e.pointerId, keys);
     timers.forEach(clearTimeout); timers = [];
+    autoTimers.forEach(clearTimeout); autoTimers = [];
+    pressAt = Date.now();
+    released = false;
     keys.forEach((k, i) => {
       if (stagger && i > 0) timers.push(setTimeout(() => sendKey(k, true), stagger * i));
       else sendKey(k, true);
     });
   };
   const release = (e) => {
+    if (released) return;   // pointerup + lostpointercapture both fire; run once
+    released = true;
     timers.forEach(clearTimeout); timers = [];
     btn.classList.remove("active");
     keys.forEach((k) => sendKey(k, false));
     if (e && e.pointerId != null) activeByPointer.delete(e.pointerId);
+    // Long hold → one extra tap of holdTap, just after the keys lift, so the
+    // pogo retracts at the apex. A short tap behaves exactly as before.
+    if (holdTap && holdMs && pressAt && (Date.now() - pressAt) >= holdMs) {
+      autoTimers.push(setTimeout(() => sendKey(holdTap, true), 30));
+      autoTimers.push(setTimeout(() => sendKey(holdTap, false), 120));
+    }
+    pressAt = 0;
   };
 
   btn.addEventListener("pointerdown", press);
