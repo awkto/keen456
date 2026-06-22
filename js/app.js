@@ -139,7 +139,7 @@ async function captureSave(key) {
 
 // ---- settings (persisted in localStorage) ----------------------------------
 
-const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto", engine: "dosbox" };
+const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto", engine: "dosbox", pogohold: "180" };
 const getSetting = (k) => localStorage.getItem("keen." + k) || SETTING_DEFAULTS[k];
 const setSetting = (k, v) => localStorage.setItem("keen." + k, v);
 
@@ -344,11 +344,10 @@ function bindTouchButton(btn) {
   // mounted — pressing both on the same frame (from a standstill) just gives a
   // tiny bounce. data-keys order sets the sequence (e.g. pogo first, then jump).
   const stagger = parseInt(btn.dataset.stagger || "0", 10) || 0;
-  // Long-hold auto-tap: if the button is held >= holdMs, then on release we also
-  // send one extra tap of holdTap. Used by POGO — holding for the super pogo+jump
+  // Long-hold auto-tap: read live from data-hold-tap / data-hold-ms at release time
+  // (the Settings dropdown updates data-hold-ms — "off" | "0" always | "40".."250"),
+  // so changes apply without rebinding. Used by POGO — holding for the super pogo+jump
   // and releasing at the apex auto-taps pogo again to retract it ("put it away").
-  const holdTap = parseInt(btn.dataset.holdTap || "0", 10) || 0;
-  const holdMs = parseInt(btn.dataset.holdMs || "0", 10) || 0;
   let timers = [];        // staggered key-downs (cancelled on release)
   let autoTimers = [];    // the post-release auto-tap (cancelled on next press)
   let pressAt = 0;
@@ -378,8 +377,12 @@ function bindTouchButton(btn) {
     keys.forEach((k) => sendKey(k, false));
     if (e && e.pointerId != null) activeByPointer.delete(e.pointerId);
     // Long hold → one extra tap of holdTap, just after the keys lift, so the
-    // pogo retracts at the apex. A short tap behaves exactly as before.
-    if (holdTap && holdMs && pressAt && (Date.now() - pressAt) >= holdMs) {
+    // pogo retracts at the apex. A short tap behaves exactly as before. "off"
+    // disables it; "0" always retracts on release; otherwise threshold in ms.
+    const holdTap = parseInt(btn.dataset.holdTap || "0", 10) || 0;
+    const holdMsRaw = btn.dataset.holdMs;
+    if (holdTap && holdMsRaw != null && holdMsRaw !== "off" && pressAt
+        && (Date.now() - pressAt) >= (parseInt(holdMsRaw, 10) || 0)) {
       autoTimers.push(setTimeout(() => sendKey(holdTap, true), 30));
       autoTimers.push(setTimeout(() => sendKey(holdTap, false), 120));
     }
@@ -664,13 +667,25 @@ async function importSave(file) {
 
 // ---- settings UI -----------------------------------------------------------
 
+// Push the pogo-hold setting onto the POGO button so bindTouchButton reads it live.
+function applyPogoHold() {
+  const btn = document.querySelector("#touch-controls .abtn.pogo");
+  if (btn) btn.dataset.holdMs = getSetting("pogohold");
+}
+
 function setupSettings() {
-  [["set-aspect", "aspect"], ["set-rendering", "rendering"], ["set-touch", "touch"], ["set-engine", "engine"]]
+  [["set-aspect", "aspect"], ["set-rendering", "rendering"], ["set-touch", "touch"],
+   ["set-engine", "engine"], ["set-pogohold", "pogohold"]]
     .forEach(([id, key]) => {
       const sel = $(id);
+      if (!sel) return;
       sel.value = getSetting(key);
-      sel.addEventListener("change", () => setSetting(key, sel.value));
+      sel.addEventListener("change", () => {
+        setSetting(key, sel.value);
+        if (key === "pogohold") applyPogoHold();
+      });
     });
+  applyPogoHold();
 }
 
 // ---- server / kiosk mode ---------------------------------------------------

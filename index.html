@@ -108,6 +108,17 @@
           <option value="dosboxX">DOSBox-X — real-time Save/Load states</option>
         </select>
       </label>
+      <label class="setting">Pogo auto-retract
+        <select id="set-pogohold">
+          <option value="off">Off — pogo stays out (tap pogo again yourself)</option>
+          <option value="0">Always — any hold auto-retracts on release</option>
+          <option value="40">40 ms</option>
+          <option value="80">80 ms</option>
+          <option value="130">130 ms</option>
+          <option value="180">180 ms (default)</option>
+          <option value="250">250 ms</option>
+        </select>
+      </label>
     </section>
   </main>
 
@@ -170,6 +181,6 @@
     </p>
   </footer>
 
-  <script src="js/app.js?v=28"></script>
+  <script src="js/app.js?v=29"></script>
 </body>
 </html>
