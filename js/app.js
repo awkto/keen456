@@ -674,10 +674,10 @@ function applyPogoHold() {
 }
 
 function setupSettings() {
-  // "0" (always auto-retract) was removed — it double-toggles the pogo on every
-  // press, so a pogo that's already ON (e.g. after a load) can't be turned off.
-  // Migrate anyone who had it set back to the safe default.
-  if (getSetting("pogohold") === "0") setSetting("pogohold", "180");
+  // Low thresholds (0/40/80) were removed — a tap shorter than the threshold is
+  // the only escape from a stuck-ON pogo, and human taps rarely beat ~80ms, so
+  // those left no reliable escape. 130 is the floor. Migrate dropped values.
+  if (["0", "40", "80"].includes(getSetting("pogohold"))) setSetting("pogohold", "180");
   [["set-aspect", "aspect"], ["set-rendering", "rendering"], ["set-touch", "touch"],
    ["set-engine", "engine"], ["set-pogohold", "pogohold"]]
     .forEach(([id, key]) => {
