@@ -572,7 +572,7 @@ const FILTERS = {
   off:       null,
   scanlines: { type: 1, scan: 0.45, mask: 0,    vig: 0,    css: "" },
   crt:       { type: 3, scan: 0.45, mask: 0.18, vig: 0.45, css: "" },
-  curved:    { sample: true, scan: 0.42, mask: 0.16, vig: 0.50, curve: 0.22, css: "" },
+  curved:    { sample: true, scan: 0.42, mask: 0.16, vig: 0.50, curve: 0.12, css: "" },
   rgb:       { type: 2, scan: 0,    mask: 0.22, vig: 0,    css: "" },
   soft:      { type: 1, scan: 0.30, mask: 0,    vig: 0,    css: "blur(0.6px) saturate(1.06)" },
   amber:     { type: 1, scan: 0.42, mask: 0,    vig: 0.25, css: "grayscale(1) sepia(1) hue-rotate(-18deg) saturate(3.2) brightness(1.05)" },
