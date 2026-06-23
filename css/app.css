@@ -489,6 +489,11 @@ html, body {
 .crt-canvas.on { display: block; }
 
 /* checkbox setting row (e.g. "also apply to desktop controls") */
-.setting.checkbox { cursor: pointer; }
-.setting.checkbox small { color: var(--muted); }
-.setting.checkbox input[type="checkbox"] { width: 1.1rem; height: 1.1rem; flex: 0 0 auto; cursor: pointer; }
+.setting.checkbox { cursor: pointer; flex-wrap: nowrap; width: 100%; }
+.setting.checkbox span { flex: 1 1 auto; min-width: 0; }
+.setting.checkbox small { color: var(--muted); display: block; }
+.setting.checkbox input[type="checkbox"] { width: 1.2rem; height: 1.2rem; flex: 0 0 auto; margin: 0; cursor: pointer; }
+@media (max-width: 480px) {
+  /* keep the checkbox beside its label even though other settings stack */
+  .setting.checkbox { flex-direction: row; align-items: center; }
+}

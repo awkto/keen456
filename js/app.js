@@ -814,26 +814,35 @@ function applyPogoHold() {
   if (btn) btn.dataset.holdMs = getSetting("pogohold");
 }
 
-// Desktop pogo auto-retract: mirror the touch POGO behaviour on the physical
-// Alt key. We observe Alt in the capture phase (so js-dos still gets it and the
-// native pogo toggle happens) and, if Alt was held >= the pogohold threshold,
-// inject one extra Alt tap on release to retract the pogo at the apex — exactly
-// like releasing the on-screen POGO button. Opt-in via the "also apply to
-// desktop controls" checkbox; reuses the same pogohold ms.
+// Desktop POGO on the physical Alt key — mirrors the on-screen POGO button when
+// the "also apply to desktop controls" checkbox is on. The native Alt already
+// gives the game Pogo (342), so we (a) inject Jump (Ctrl 341) staggered ~30ms
+// after, so Alt does the Pogo+Jump super-bounce like mobile, and (b) on release
+// past the pogohold threshold inject one extra Alt tap to auto-retract the pogo.
+// Observed in the capture phase so js-dos still receives the native Alt; reuses
+// the same pogohold ms. Off => plain native Alt (pogo only), unchanged.
+const JUMP_KEY = 341;        // GLFW left Ctrl = Jump
 function setupDesktopPogo() {
-  const downAt = {};   // "AltLeft" | "AltRight" -> press timestamp
+  const st = {};   // "AltLeft" | "AltRight" -> { t0, jumpTimer, jumpDown }
   const code = (e) => (e.code === "AltLeft" ? 342 : e.code === "AltRight" ? 346 : 0);
   window.addEventListener("keydown", (e) => {
     if (!code(e) || e.repeat) return;
-    downAt[e.code] = Date.now();
+    if (!gameCi || getSetting("pogodesktop") !== "on") return;
+    const s = st[e.code] || (st[e.code] = {});
+    s.t0 = Date.now(); s.jumpDown = false;
+    clearTimeout(s.jumpTimer);
+    s.jumpTimer = setTimeout(() => { s.jumpDown = true; sendKey(JUMP_KEY, true); }, 30);
   }, true);
   window.addEventListener("keyup", (e) => {
     const gc = code(e); if (!gc) return;
-    const t0 = downAt[e.code]; downAt[e.code] = 0;
+    const s = st[e.code]; if (!s) return;
+    const t0 = s.t0; s.t0 = 0;
+    clearTimeout(s.jumpTimer);
+    if (s.jumpDown) { sendKey(JUMP_KEY, false); s.jumpDown = false; }   // release Jump with Alt
     if (!gameCi || getSetting("pogodesktop") !== "on") return;
     const ms = getSetting("pogohold");
     if (ms === "off" || !t0 || (Date.now() - t0) < (parseInt(ms, 10) || 0)) return;
-    setTimeout(() => sendKey(gc, true), 30);
+    setTimeout(() => sendKey(gc, true), 30);    // extra Alt tap -> retract pogo
     setTimeout(() => sendKey(gc, false), 120);
   }, true);
 }
