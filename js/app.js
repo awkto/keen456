@@ -211,8 +211,8 @@ async function launch(url, key) {
   });
 
   // Apply the chosen visual filter and keep its overlay glued to the canvas.
-  startOverlaySync();
-  applyFilter();
+  startCrtSync();
+  renderCrt();
 
   // Safety-net autosave while playing (covers the game's in-menu saves).
   clearInterval(saveTimer);
@@ -557,74 +557,119 @@ function setupSaveLoad() {
 }
 
 // ---- visual filters (CRT / scanlines) --------------------------------------
-// A CSS overlay sized to the emulator canvas — pointer-events:none, no per-frame
-// JS, nothing in the emulator's render path, so it adds no latency. The overlay
-// engine is cross-platform; only the toggle button is desktop-gated for now.
-let overlayStop = null;   // tears down the resize/poll observers on the overlay
+// A WebGL overlay canvas drawn on top of the game (mix-blend-mode:multiply),
+// pointer-events:none. js-dos renders inside a worker we can't reach, and its
+// own framebuffer can't be sampled, so the effect is procedural — but the key
+// fix vs. the old CSS pass is ALIGNMENT: the scanline/mask pitch is locked to
+// the game's pixel grid (EGA 320x200 for Keen 4/5/6), phase-anchored to the
+// canvas top, so lines sit exactly on game rows instead of an arbitrary screen
+// pitch. The pattern is static (no per-frame work) — we only redraw on
+// launch / resize / filter change, so it costs the game nothing.
+const GAME_W = 320, GAME_H = 200;        // Keen Galaxy EGA resolution
+const FILTER_ID = { scanlines: 1, rgb: 2, crt: 3 };
+let crtStop = null;                      // tears down resize/poll observers
+let crtGL = null;                        // { gl, prog, uni } once compiled
 
-// Glue the overlay rectangle to the canvas. game-stage is position:fixed inset:0,
-// so the canvas's viewport rect equals its offset within the (absolute) overlay's
-// containing block.
-function positionOverlay() {
-  const ov = $("crt-overlay");
-  const canvas = document.querySelector("#dos canvas");
-  if (!ov || !canvas) return;
-  const r = canvas.getBoundingClientRect();
-  if (!r.width || !r.height) return;
-  ov.style.left = r.left + "px";
-  ov.style.top = r.top + "px";
-  ov.style.width = r.width + "px";
-  ov.style.height = r.height + "px";
+function compileCrtGL(canvas) {
+  const gl = canvas.getContext("webgl", { premultipliedAlpha: false, antialias: false });
+  if (!gl) return null;
+  const vs = `attribute vec2 aPos; varying vec2 vUv;
+    void main(){ vUv = vec2(aPos.x*0.5+0.5, 1.0-(aPos.y*0.5+0.5)); gl_Position = vec4(aPos,0.0,1.0); }`;
+  // Output is a per-pixel MULTIPLIER (white = unchanged); composited over the
+  // game by CSS mix-blend-mode:multiply. All periods are in GAME pixels.
+  const fs = `precision highp float; varying vec2 vUv;
+    uniform vec2 uGame; uniform int uFilter; uniform float uScan; uniform float uMask; uniform float uVig;
+    void main(){
+      vec3 m = vec3(1.0);
+      if (uFilter == 1 || uFilter == 3) {            // scanlines, one per game row
+        float s = sin(3.14159265 * vUv.y * uGame.y); // 0 at row edges, 1 at centre
+        m *= mix(1.0 - uScan, 1.0, s * s);
+      }
+      if (uFilter == 2 || uFilter == 3) {            // RGB triads, aligned to game columns
+        float ph = mod(floor(vUv.x * uGame.x), 3.0);
+        vec3 t = vec3(1.0 - uMask);
+        if (ph < 0.5)      t.r = 1.0;
+        else if (ph < 1.5) t.g = 1.0;
+        else               t.b = 1.0;
+        m *= t;
+      }
+      if (uFilter == 3) {                            // gentle vignette for full CRT
+        vec2 d = vUv - 0.5;
+        m *= 1.0 - uVig * dot(d, d) * 2.0;
+      }
+      gl_FragColor = vec4(m, 1.0);
+    }`;
+  const mk = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) { console.warn("CRT shader:", gl.getShaderInfoLog(sh)); return null; } return sh; };
+  const v = mk(gl.VERTEX_SHADER, vs), f = mk(gl.FRAGMENT_SHADER, fs);
+  if (!v || !f) return null;
+  const prog = gl.createProgram(); gl.attachShader(prog, v); gl.attachShader(prog, f); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.warn("CRT link:", gl.getProgramInfoLog(prog)); return null; }
+  gl.useProgram(prog);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, "aPos"); gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  return { gl, prog, uni: {
+    game: gl.getUniformLocation(prog, "uGame"), filter: gl.getUniformLocation(prog, "uFilter"),
+    scan: gl.getUniformLocation(prog, "uScan"), mask: gl.getUniformLocation(prog, "uMask"),
+    vig: gl.getUniformLocation(prog, "uVig"),
+  } };
 }
 
-function applyFilter() {
-  const ov = $("crt-overlay");
-  if (!ov) return;
+// Size the overlay to the game canvas and (re)draw the current filter. Static —
+// called only when geometry or the setting changes, never per frame.
+function renderCrt() {
+  const cv = $("crt-canvas");
+  const game = document.querySelector("#dos canvas");
+  if (!cv || !game) return;
   const f = getSetting("filter");
-  ov.className = "crt-overlay" + (f && f !== "off" ? " on " + f : "");
-  document.querySelectorAll(".filt-opt").forEach((b) =>
-    b.classList.toggle("sel", b.dataset.filter === f));
-  if (f && f !== "off") positionOverlay();
+  const id = FILTER_ID[f] || 0;
+  if (!id) { cv.classList.remove("on"); return; }
+
+  const r = game.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  cv.style.left = r.left + "px"; cv.style.top = r.top + "px";
+  cv.style.width = r.width + "px"; cv.style.height = r.height + "px";
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; crtGL = null; }   // context resize -> recompile
+
+  if (!crtGL) crtGL = compileCrtGL(cv);
+  if (!crtGL) { cv.classList.remove("on"); return; }
+  const { gl, uni } = crtGL;
+  gl.viewport(0, 0, w, h);
+  gl.uniform2f(uni.game, GAME_W, GAME_H);
+  gl.uniform1i(uni.filter, id);
+  gl.uniform1f(uni.scan, 0.45);   // scanline depth
+  gl.uniform1f(uni.mask, 0.18);   // RGB mask strength
+  gl.uniform1f(uni.vig, 0.35);    // vignette strength
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  cv.classList.add("on");
 }
 
 // Keep the overlay aligned as the canvas mounts (async) / resizes / fullscreens.
-function startOverlaySync() {
-  if (overlayStop) return;
+function startCrtSync() {
+  if (crtStop) return;
   const dos = $("dos");
-  const ro = (typeof ResizeObserver !== "undefined") ? new ResizeObserver(positionOverlay) : null;
+  const ro = (typeof ResizeObserver !== "undefined") ? new ResizeObserver(renderCrt) : null;
   if (ro && dos) ro.observe(dos);
-  const onResize = () => positionOverlay();
+  const onResize = () => renderCrt();
   window.addEventListener("resize", onResize);
   document.addEventListener("fullscreenchange", onResize);
-  // The canvas appears a moment after Dos(); nudge until it's there, then observe it.
   let tries = 0;
   const poll = setInterval(() => {
     const c = document.querySelector("#dos canvas");
-    if (c) { if (ro) ro.observe(c); positionOverlay(); }
+    if (c) { if (ro) ro.observe(c); renderCrt(); }
     if (c || ++tries > 25) clearInterval(poll);
   }, 200);
-  overlayStop = () => {
+  crtStop = () => {
     if (ro) ro.disconnect();
     window.removeEventListener("resize", onResize);
     document.removeEventListener("fullscreenchange", onResize);
     clearInterval(poll);
   };
-}
-
-function setupFilters() {
-  const btn = $("filter-btn");
-  const popup = $("filter-popup");
-  if (!btn || !popup) return;
-  const isOpen = () => popup.classList.contains("open");
-  const open = () => { popup.hidden = false; popup.classList.add("open"); btn.classList.add("active"); };
-  const close = () => { popup.classList.remove("open"); popup.hidden = true; btn.classList.remove("active"); };
-
-  btn.addEventListener("click", (e) => { e.preventDefault(); isOpen() ? close() : open(); });
-  popup.querySelectorAll(".filt-opt").forEach((b) =>
-    b.addEventListener("click", () => { setSetting("filter", b.dataset.filter); applyFilter(); close(); }));
-  document.addEventListener("pointerdown", (e) => {
-    if (isOpen() && !popup.contains(e.target) && !btn.contains(e.target)) close();
-  }, true);
 }
 
 function setupTouchControls() {
@@ -754,7 +799,7 @@ function setupSettings() {
   // those left no reliable escape. 130 is the floor. Migrate dropped values.
   if (["0", "40", "80"].includes(getSetting("pogohold"))) setSetting("pogohold", "180");
   [["set-aspect", "aspect"], ["set-rendering", "rendering"], ["set-touch", "touch"],
-   ["set-engine", "engine"], ["set-pogohold", "pogohold"]]
+   ["set-engine", "engine"], ["set-pogohold", "pogohold"], ["set-filter", "filter"]]
     .forEach(([id, key]) => {
       const sel = $(id);
       if (!sel) return;
@@ -762,6 +807,7 @@ function setupSettings() {
       sel.addEventListener("change", () => {
         setSetting(key, sel.value);
         if (key === "pogohold") applyPogoHold();
+        if (key === "filter") renderCrt();   // re-draw immediately if a game is running
       });
     });
   applyPogoHold();
@@ -820,7 +866,6 @@ window.addEventListener("DOMContentLoaded", () => {
     if (App && App.addListener) App.addListener("pause", () => captureSave(currentKey));
   } catch (_) {}
   setupSettings();
-  setupFilters();
   setupTouchControls();
   launchable["keen4"] = "games/keen4.jsdos";   // bundled demo (overridden by server manifest if present)
   setupServerMode().then(deepLink);            // deep-link after the manifest (if any) has loaded
