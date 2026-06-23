@@ -574,8 +574,8 @@ const GAME_W = 320, GAME_H = 200;        // Keen Galaxy EGA resolution
 const FILTERS = {
   off:       null,
   scanlines: { type: 1, scan: 0.45, mask: 0,    vig: 0,    curve: 0,    css: "" },
-  crt:       { type: 3, scan: 0.45, mask: 0.18, vig: 0.35, curve: 0,    css: "" },
-  curved:    { type: 3, scan: 0.42, mask: 0.16, vig: 0.45, curve: 0.10, css: "" },
+  crt:       { type: 3, scan: 0.45, mask: 0.18, vig: 0.45, curve: 0,    css: "" },
+  curved:    { type: 3, scan: 0.42, mask: 0.16, vig: 0.50, curve: 0.22, css: "" },
   rgb:       { type: 2, scan: 0,    mask: 0.22, vig: 0,    curve: 0,    css: "" },
   soft:      { type: 1, scan: 0.30, mask: 0,    vig: 0,    curve: 0,    css: "blur(0.6px) saturate(1.06)" },
   amber:     { type: 1, scan: 0.42, mask: 0,    vig: 0.25, curve: 0,    css: "grayscale(1) sepia(1) hue-rotate(-18deg) saturate(3.2) brightness(1.05)" },
@@ -585,7 +585,7 @@ let crtStop = null;                      // tears down resize/poll observers
 let crtGL = null;                        // { gl, prog, uni } once compiled
 
 function compileCrtGL(canvas) {
-  const gl = canvas.getContext("webgl", { premultipliedAlpha: false, antialias: false });
+  const gl = canvas.getContext("webgl", { premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: true });
   if (!gl) return null;
   const vs = `attribute vec2 aPos; varying vec2 vUv;
     void main(){ vUv = vec2(aPos.x*0.5+0.5, 1.0-(aPos.y*0.5+0.5)); gl_Position = vec4(aPos,0.0,1.0); }`;
@@ -595,24 +595,25 @@ function compileCrtGL(canvas) {
     uniform vec2 uGame; uniform int uFilter; uniform float uScan; uniform float uMask; uniform float uVig; uniform float uCurve;
     void main(){
       vec3 m = vec3(1.0);
+      vec2 p = vUv * 2.0 - 1.0;                       // -1..1
+      if (uCurve > 0.0) p *= 1.0 + uCurve * dot(p, p); // barrel warp -> bowed tube
+      vec2 uv = p * 0.5 + 0.5;                        // warped UV (== vUv when uCurve==0)
       if (uFilter == 1 || uFilter == 3) {            // scanlines, one per game row
-        float s = sin(3.14159265 * vUv.y * uGame.y); // 0 at row edges, 1 at centre
+        float s = sin(3.14159265 * uv.y * uGame.y);  // 0 at row edges, 1 at centre
         m *= mix(1.0 - uScan, 1.0, s * s);
       }
       if (uFilter == 2 || uFilter == 3) {            // RGB triads, aligned to game columns
-        float ph = mod(floor(vUv.x * uGame.x), 3.0);
+        float ph = mod(floor(uv.x * uGame.x), 3.0);
         vec3 t = vec3(1.0 - uMask);
         if (ph < 0.5)      t.r = 1.0;
         else if (ph < 1.5) t.g = 1.0;
         else               t.b = 1.0;
         m *= t;
       }
-      vec2 p = vUv * 2.0 - 1.0;                       // -1..1
       if (uVig > 0.0) m *= 1.0 - uVig * dot(p, p) * 0.5;
-      if (uCurve > 0.0) {                            // rounded tube edge -> black corners
-        vec2 q = abs(p) - vec2(1.0 - uCurve);
-        float d = length(max(q, 0.0)) - uCurve;
-        m *= smoothstep(0.02, -0.02, d);
+      if (uCurve > 0.0) {                            // curved black bezel (where the warp pushes past the tube)
+        vec2 a = smoothstep(vec2(0.0), vec2(0.004), uv) * (vec2(1.0) - smoothstep(vec2(0.996), vec2(1.0), uv));
+        m *= a.x * a.y;
       }
       gl_FragColor = vec4(m, 1.0);
     }`;
@@ -650,7 +651,7 @@ function renderCrt() {
   if (!r.width || !r.height) return;
   cv.style.left = r.left + "px"; cv.style.top = r.top + "px";
   cv.style.width = r.width + "px"; cv.style.height = r.height + "px";
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);   // full device res so scanlines stay crisp on hi-DPI phones
   const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
   if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; crtGL = null; }   // context resize -> recompile
 
