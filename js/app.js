@@ -557,118 +557,184 @@ function setupSaveLoad() {
 }
 
 // ---- visual filters (CRT / scanlines) --------------------------------------
-// A WebGL overlay canvas drawn on top of the game (mix-blend-mode:multiply),
-// pointer-events:none. js-dos renders inside a worker we can't reach, and its
-// own framebuffer can't be sampled, so the effect is procedural — but the key
-// fix vs. the old CSS pass is ALIGNMENT: the scanline/mask pitch is locked to
-// the game's pixel grid (EGA 320x200 for Keen 4/5/6), phase-anchored to the
-// canvas top, so lines sit exactly on game rows instead of an arbitrary screen
-// pitch. The pattern is static (no per-frame work) — we only redraw on
-// launch / resize / filter change, so it costs the game nothing.
+// Two render paths, both into a WebGL canvas sized to the game canvas:
+//  • OVERLAY (default, zero-cost): a static multiplier drawn once and composited
+//    via mix-blend-mode:multiply. Can't move pixels, so scanlines/mask/vignette
+//    only. Pitch is locked to the EGA 320x200 grid so lines sit on game rows.
+//  • SAMPLE (curved): js-dos frames can't be read directly, but captureStream
+//    taps the compositor output — we feed that into a <video>, upload it as a
+//    texture every frame and re-render it WARPED (real barrel curvature) with
+//    scanlines/mask/vignette baked in. Our opaque canvas then covers the flat
+//    original. Costs ~1 frame of display latency + 1 upload+draw per frame, only
+//    while a sampling filter is selected; the emulator (worker) is unaffected.
 const GAME_W = 320, GAME_H = 200;        // Keen Galaxy EGA resolution
-// Each filter = a WebGL overlay (type 1=scanlines, 2=RGB mask, 3=both; scan/mask/
-// vig/curve strengths) PLUS an optional CSS `filter` applied to the game canvas
-// itself (blur = soft pixels, hue/sepia = colour shift) — the browser applies
-// that to the real image for free. Curvature here is a rounded tube vignette
-// (the image can't be geometrically warped — js-dos frames can't be sampled).
 const FILTERS = {
   off:       null,
-  scanlines: { type: 1, scan: 0.45, mask: 0,    vig: 0,    curve: 0,    css: "" },
-  crt:       { type: 3, scan: 0.45, mask: 0.18, vig: 0.45, curve: 0,    css: "" },
-  curved:    { type: 3, scan: 0.42, mask: 0.16, vig: 0.50, curve: 0.22, css: "" },
-  rgb:       { type: 2, scan: 0,    mask: 0.22, vig: 0,    curve: 0,    css: "" },
-  soft:      { type: 1, scan: 0.30, mask: 0,    vig: 0,    curve: 0,    css: "blur(0.6px) saturate(1.06)" },
-  amber:     { type: 1, scan: 0.42, mask: 0,    vig: 0.25, curve: 0,    css: "grayscale(1) sepia(1) hue-rotate(-18deg) saturate(3.2) brightness(1.05)" },
-  green:     { type: 1, scan: 0.42, mask: 0,    vig: 0.25, curve: 0,    css: "grayscale(1) sepia(1) hue-rotate(72deg) saturate(2.6) brightness(1.04)" },
+  scanlines: { type: 1, scan: 0.45, mask: 0,    vig: 0,    css: "" },
+  crt:       { type: 3, scan: 0.45, mask: 0.18, vig: 0.45, css: "" },
+  curved:    { sample: true, scan: 0.42, mask: 0.16, vig: 0.50, curve: 0.22, css: "" },
+  rgb:       { type: 2, scan: 0,    mask: 0.22, vig: 0,    css: "" },
+  soft:      { type: 1, scan: 0.30, mask: 0,    vig: 0,    css: "blur(0.6px) saturate(1.06)" },
+  amber:     { type: 1, scan: 0.42, mask: 0,    vig: 0.25, css: "grayscale(1) sepia(1) hue-rotate(-18deg) saturate(3.2) brightness(1.05)" },
+  green:     { type: 1, scan: 0.42, mask: 0,    vig: 0.25, css: "grayscale(1) sepia(1) hue-rotate(72deg) saturate(2.6) brightness(1.04)" },
 };
-let crtStop = null;                      // tears down resize/poll observers
-let crtGL = null;                        // { gl, prog, uni } once compiled
+let crtStop = null;     // resize/poll observer teardown
+let crtGL = null;       // { gl, buf, overlay, sample, tex }
+let crtRAF = 0;         // sampling render-loop handle
+let crtVideo = null, crtStream = null;
 
-function compileCrtGL(canvas) {
-  const gl = canvas.getContext("webgl", { premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: true });
-  if (!gl) return null;
-  const vs = `attribute vec2 aPos; varying vec2 vUv;
-    void main(){ vUv = vec2(aPos.x*0.5+0.5, 1.0-(aPos.y*0.5+0.5)); gl_Position = vec4(aPos,0.0,1.0); }`;
-  // Output is a per-pixel MULTIPLIER (white = unchanged); composited over the
-  // game by CSS mix-blend-mode:multiply. All periods are in GAME pixels.
-  const fs = `precision highp float; varying vec2 vUv;
-    uniform vec2 uGame; uniform int uFilter; uniform float uScan; uniform float uMask; uniform float uVig; uniform float uCurve;
-    void main(){
-      vec3 m = vec3(1.0);
-      vec2 p = vUv * 2.0 - 1.0;                       // -1..1
-      if (uCurve > 0.0) p *= 1.0 + uCurve * dot(p, p); // barrel warp -> bowed tube
-      vec2 uv = p * 0.5 + 0.5;                        // warped UV (== vUv when uCurve==0)
-      if (uFilter == 1 || uFilter == 3) {            // scanlines, one per game row
-        float s = sin(3.14159265 * uv.y * uGame.y);  // 0 at row edges, 1 at centre
-        m *= mix(1.0 - uScan, 1.0, s * s);
-      }
-      if (uFilter == 2 || uFilter == 3) {            // RGB triads, aligned to game columns
-        float ph = mod(floor(uv.x * uGame.x), 3.0);
-        vec3 t = vec3(1.0 - uMask);
-        if (ph < 0.5)      t.r = 1.0;
-        else if (ph < 1.5) t.g = 1.0;
-        else               t.b = 1.0;
-        m *= t;
-      }
-      if (uVig > 0.0) m *= 1.0 - uVig * dot(p, p) * 0.5;
-      if (uCurve > 0.0) {                            // curved black bezel (where the warp pushes past the tube)
-        vec2 a = smoothstep(vec2(0.0), vec2(0.004), uv) * (vec2(1.0) - smoothstep(vec2(0.996), vec2(1.0), uv));
-        m *= a.x * a.y;
-      }
-      gl_FragColor = vec4(m, 1.0);
-    }`;
-  const mk = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+const CRT_VS = `attribute vec2 aPos; varying vec2 vUv;
+  void main(){ vUv = vec2(aPos.x*0.5+0.5, 1.0-(aPos.y*0.5+0.5)); gl_Position = vec4(aPos,0.0,1.0); }`;
+// Overlay: outputs a multiplier (composited via mix-blend-mode:multiply).
+const CRT_FS_OVERLAY = `precision highp float; varying vec2 vUv;
+  uniform vec2 uGame; uniform int uFilter; uniform float uScan; uniform float uMask; uniform float uVig;
+  void main(){
+    vec3 m = vec3(1.0); vec2 uv = vUv;
+    if (uFilter==1 || uFilter==3){ float s=sin(3.14159265*uv.y*uGame.y); m*=mix(1.0-uScan,1.0,s*s); }
+    if (uFilter==2 || uFilter==3){ float ph=mod(floor(uv.x*uGame.x),3.0); vec3 t=vec3(1.0-uMask);
+      if(ph<0.5)t.r=1.0; else if(ph<1.5)t.g=1.0; else t.b=1.0; m*=t; }
+    if (uVig>0.0){ vec2 p=uv*2.0-1.0; m*=1.0-uVig*dot(p,p)*0.5; }
+    gl_FragColor = vec4(m, 1.0);
+  }`;
+// Sample: warps the captured game texture (real curvature) + bakes in the CRT look.
+const CRT_FS_SAMPLE = `precision highp float; varying vec2 vUv;
+  uniform sampler2D uTex; uniform vec2 uGame; uniform float uScan; uniform float uMask; uniform float uVig; uniform float uCurve;
+  void main(){
+    vec2 p = vUv*2.0-1.0;
+    p *= 1.0 + uCurve*dot(p,p);                       // barrel warp the SAMPLE coords -> pixels bend
+    vec2 uv = p*0.5+0.5;
+    if (uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0){ gl_FragColor=vec4(0.0,0.0,0.0,1.0); return; }
+    vec3 c = texture2D(uTex, uv).rgb;
+    float s=sin(3.14159265*uv.y*uGame.y); c*=mix(1.0-uScan,1.0,s*s);
+    float ph=mod(floor(uv.x*uGame.x),3.0); vec3 t=vec3(1.0-uMask);
+    if(ph<0.5)t.r=1.0; else if(ph<1.5)t.g=1.0; else t.b=1.0; c*=t;
+    c*=1.0-uVig*dot(p,p)*0.5;
+    gl_FragColor = vec4(c, 1.0);
+  }`;
+
+function crtProgram(gl, fs) {
+  const mk = (ty, src) => { const sh = gl.createShader(ty); gl.shaderSource(sh, src); gl.compileShader(sh);
     if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) { console.warn("CRT shader:", gl.getShaderInfoLog(sh)); return null; } return sh; };
-  const v = mk(gl.VERTEX_SHADER, vs), f = mk(gl.FRAGMENT_SHADER, fs);
+  const v = mk(gl.VERTEX_SHADER, CRT_VS), f = mk(gl.FRAGMENT_SHADER, fs);
   if (!v || !f) return null;
   const prog = gl.createProgram(); gl.attachShader(prog, v); gl.attachShader(prog, f); gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.warn("CRT link:", gl.getProgramInfoLog(prog)); return null; }
-  gl.useProgram(prog);
-  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-  const loc = gl.getAttribLocation(prog, "aPos"); gl.enableVertexAttribArray(loc);
-  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  return { gl, prog, uni: {
+  return { prog, loc: gl.getAttribLocation(prog, "aPos"), uni: {
     game: gl.getUniformLocation(prog, "uGame"), filter: gl.getUniformLocation(prog, "uFilter"),
     scan: gl.getUniformLocation(prog, "uScan"), mask: gl.getUniformLocation(prog, "uMask"),
     vig: gl.getUniformLocation(prog, "uVig"), curve: gl.getUniformLocation(prog, "uCurve"),
+    tex: gl.getUniformLocation(prog, "uTex"),
   } };
 }
 
-// Size the overlay to the game canvas and (re)draw the current filter. Static —
-// called only when geometry or the setting changes, never per frame.
+function crtInit(canvas) {
+  const gl = canvas.getContext("webgl", { premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: true });
+  if (!gl) return null;
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const overlay = crtProgram(gl, CRT_FS_OVERLAY), sample = crtProgram(gl, CRT_FS_SAMPLE);
+  if (!overlay || !sample) return null;
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  // No UNPACK_FLIP_Y: the vertex shader already flips Y (vUv.y=0 at top), so an
+  // unflipped texture upload maps screen-top -> game-top correctly.
+  return { gl, buf, overlay, sample, tex };
+}
+
+function crtBind(p) {
+  const gl = crtGL.gl;
+  gl.useProgram(p.prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, crtGL.buf);
+  gl.enableVertexAttribArray(p.loc);
+  gl.vertexAttribPointer(p.loc, 2, gl.FLOAT, false, 0, 0);
+}
+
+// Match the overlay canvas to the game canvas (CSS box + backing at full DPR).
+function crtSize(cv, game) {
+  const r = game.getBoundingClientRect();
+  if (!r.width || !r.height) return null;
+  cv.style.left = r.left + "px"; cv.style.top = r.top + "px";
+  cv.style.width = r.width + "px"; cv.style.height = r.height + "px";
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }   // resize keeps the GL context/resources
+  return { w, h };
+}
+
+function crtStopSample() {
+  if (crtRAF) { cancelAnimationFrame(crtRAF); crtRAF = 0; }
+  if (crtStream) { try { crtStream.getTracks().forEach((t) => t.stop()); } catch (_) {} crtStream = null; }
+  if (crtVideo) { try { crtVideo.pause(); crtVideo.srcObject = null; } catch (_) {} crtVideo = null; }
+}
+
 function renderCrt() {
   const cv = $("crt-canvas");
   const game = document.querySelector("#dos canvas");
   if (!cv || !game) return;
   const def = FILTERS[getSetting("filter")];
-  // Colour-shift / blur lives on the game canvas itself (browser applies it to
-  // the real image); the WebGL overlay handles scanlines/mask/tube.
+  if (def && def.sample && crtRAF) return;     // sample loop already running & self-sizing
+  crtStopSample();
+  // Colour-shift / blur ride on the game canvas's own CSS filter.
   game.style.filter = (def && def.css) || "";
+  cv.style.mixBlendMode = (def && def.sample) ? "normal" : "multiply";
   if (!def) { cv.classList.remove("on"); return; }
-
-  const r = game.getBoundingClientRect();
-  if (!r.width || !r.height) return;
-  cv.style.left = r.left + "px"; cv.style.top = r.top + "px";
-  cv.style.width = r.width + "px"; cv.style.height = r.height + "px";
-  const dpr = Math.min(window.devicePixelRatio || 1, 3);   // full device res so scanlines stay crisp on hi-DPI phones
-  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
-  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; crtGL = null; }   // context resize -> recompile
-
-  if (!def.type) { cv.classList.remove("on"); return; }   // CSS-only filter, no overlay
-  if (!crtGL) crtGL = compileCrtGL(cv);
+  const size = crtSize(cv, game);
+  if (!size) return;
+  if (!crtGL) crtGL = crtInit(cv);
   if (!crtGL) { cv.classList.remove("on"); return; }
-  const { gl, uni } = crtGL;
-  gl.viewport(0, 0, w, h);
-  gl.uniform2f(uni.game, GAME_W, GAME_H);
-  gl.uniform1i(uni.filter, def.type);
-  gl.uniform1f(uni.scan, def.scan);
-  gl.uniform1f(uni.mask, def.mask);
-  gl.uniform1f(uni.vig, def.vig);
-  gl.uniform1f(uni.curve, def.curve);
+  const { gl } = crtGL;
+
+  if (def.sample) { cv.classList.add("on"); startCrtSampleLoop(cv, game, def); return; }
+  if (!def.type) { cv.classList.remove("on"); return; }   // CSS-only filter, no overlay
+
+  crtBind(crtGL.overlay);
+  const u = crtGL.overlay.uni;
+  gl.viewport(0, 0, size.w, size.h);
+  gl.uniform2f(u.game, GAME_W, GAME_H);
+  gl.uniform1i(u.filter, def.type);
+  gl.uniform1f(u.scan, def.scan);
+  gl.uniform1f(u.mask, def.mask);
+  gl.uniform1f(u.vig, def.vig);
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   cv.classList.add("on");
+}
+
+// Capture the game and re-render it warped, every frame, into our (opaque) canvas
+// which covers the flat original. Only used by sampling filters (curved).
+function startCrtSampleLoop(cv, game, def) {
+  const gl = crtGL.gl;
+  try {
+    crtStream = game.captureStream();
+    crtVideo = document.createElement("video");
+    crtVideo.muted = true; crtVideo.playsInline = true; crtVideo.srcObject = crtStream;
+    crtVideo.play().catch(() => {});
+  } catch (e) {
+    console.warn("CRT capture failed:", e);
+    cv.classList.remove("on"); cv.style.mixBlendMode = "multiply"; return;
+  }
+  const u = crtGL.sample.uni;
+  const draw = () => {
+    crtRAF = requestAnimationFrame(draw);
+    if (!crtVideo || crtVideo.readyState < 2) return;
+    const s = crtSize(cv, game); if (!s) return;
+    crtBind(crtGL.sample);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, crtGL.tex);
+    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, crtVideo); } catch (_) { return; }
+    gl.viewport(0, 0, s.w, s.h);
+    gl.uniform1i(u.tex, 0);
+    gl.uniform2f(u.game, GAME_W, GAME_H);
+    gl.uniform1f(u.scan, def.scan);
+    gl.uniform1f(u.mask, def.mask);
+    gl.uniform1f(u.vig, def.vig);
+    gl.uniform1f(u.curve, def.curve);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  };
+  draw();
 }
 
 // Keep the overlay aligned as the canvas mounts (async) / resizes / fullscreens.
