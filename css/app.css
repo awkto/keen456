@@ -487,3 +487,8 @@ html, body {
   mix-blend-mode: multiply;
 }
 .crt-canvas.on { display: block; }
+
+/* checkbox setting row (e.g. "also apply to desktop controls") */
+.setting.checkbox { cursor: pointer; }
+.setting.checkbox small { color: var(--muted); }
+.setting.checkbox input[type="checkbox"] { width: 1.1rem; height: 1.1rem; flex: 0 0 auto; cursor: pointer; }

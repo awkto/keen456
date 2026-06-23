@@ -15,7 +15,7 @@
   <script src="js/jsdos/js-dos.js"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=26">
+  <link rel="stylesheet" href="css/app.css?v=27">
 </head>
 <body>
   <header id="topbar">
@@ -112,8 +112,12 @@
         <select id="set-filter">
           <option value="off">Off — crisp pixels (default)</option>
           <option value="scanlines">Scanlines</option>
-          <option value="rgb">RGB — aperture mask</option>
           <option value="crt">CRT — scanlines + mask + vignette</option>
+          <option value="curved">CRT curved — tube corners</option>
+          <option value="rgb">RGB — aperture mask</option>
+          <option value="soft">Soft — blurry pixels</option>
+          <option value="amber">Amber — monochrome CRT</option>
+          <option value="green">Green — phosphor CRT</option>
         </select>
       </label>
       <label class="setting">Pogo auto-retract
@@ -123,6 +127,10 @@
           <option value="180">180 ms (default)</option>
           <option value="250">250 ms</option>
         </select>
+      </label>
+      <label class="setting checkbox">
+        <span>Also apply to desktop controls <small>(hold &amp; release the Alt key)</small></span>
+        <input type="checkbox" id="set-pogodesktop">
       </label>
     </section>
   </main>
@@ -193,6 +201,6 @@
     </p>
   </footer>
 
-  <script src="js/app.js?v=33"></script>
+  <script src="js/app.js?v=34"></script>
 </body>
 </html>

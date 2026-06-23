@@ -139,7 +139,7 @@ async function captureSave(key) {
 
 // ---- settings (persisted in localStorage) ----------------------------------
 
-const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto", engine: "dosbox", pogohold: "180", filter: "off" };
+const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto", engine: "dosbox", pogohold: "180", pogodesktop: "off", filter: "off" };
 const getSetting = (k) => localStorage.getItem("keen." + k) || SETTING_DEFAULTS[k];
 const setSetting = (k, v) => localStorage.setItem("keen." + k, v);
 
@@ -566,7 +566,21 @@ function setupSaveLoad() {
 // pitch. The pattern is static (no per-frame work) — we only redraw on
 // launch / resize / filter change, so it costs the game nothing.
 const GAME_W = 320, GAME_H = 200;        // Keen Galaxy EGA resolution
-const FILTER_ID = { scanlines: 1, rgb: 2, crt: 3 };
+// Each filter = a WebGL overlay (type 1=scanlines, 2=RGB mask, 3=both; scan/mask/
+// vig/curve strengths) PLUS an optional CSS `filter` applied to the game canvas
+// itself (blur = soft pixels, hue/sepia = colour shift) — the browser applies
+// that to the real image for free. Curvature here is a rounded tube vignette
+// (the image can't be geometrically warped — js-dos frames can't be sampled).
+const FILTERS = {
+  off:       null,
+  scanlines: { type: 1, scan: 0.45, mask: 0,    vig: 0,    curve: 0,    css: "" },
+  crt:       { type: 3, scan: 0.45, mask: 0.18, vig: 0.35, curve: 0,    css: "" },
+  curved:    { type: 3, scan: 0.42, mask: 0.16, vig: 0.45, curve: 0.10, css: "" },
+  rgb:       { type: 2, scan: 0,    mask: 0.22, vig: 0,    curve: 0,    css: "" },
+  soft:      { type: 1, scan: 0.30, mask: 0,    vig: 0,    curve: 0,    css: "blur(0.6px) saturate(1.06)" },
+  amber:     { type: 1, scan: 0.42, mask: 0,    vig: 0.25, curve: 0,    css: "grayscale(1) sepia(1) hue-rotate(-18deg) saturate(3.2) brightness(1.05)" },
+  green:     { type: 1, scan: 0.42, mask: 0,    vig: 0.25, curve: 0,    css: "grayscale(1) sepia(1) hue-rotate(72deg) saturate(2.6) brightness(1.04)" },
+};
 let crtStop = null;                      // tears down resize/poll observers
 let crtGL = null;                        // { gl, prog, uni } once compiled
 
@@ -578,7 +592,7 @@ function compileCrtGL(canvas) {
   // Output is a per-pixel MULTIPLIER (white = unchanged); composited over the
   // game by CSS mix-blend-mode:multiply. All periods are in GAME pixels.
   const fs = `precision highp float; varying vec2 vUv;
-    uniform vec2 uGame; uniform int uFilter; uniform float uScan; uniform float uMask; uniform float uVig;
+    uniform vec2 uGame; uniform int uFilter; uniform float uScan; uniform float uMask; uniform float uVig; uniform float uCurve;
     void main(){
       vec3 m = vec3(1.0);
       if (uFilter == 1 || uFilter == 3) {            // scanlines, one per game row
@@ -593,9 +607,12 @@ function compileCrtGL(canvas) {
         else               t.b = 1.0;
         m *= t;
       }
-      if (uFilter == 3) {                            // gentle vignette for full CRT
-        vec2 d = vUv - 0.5;
-        m *= 1.0 - uVig * dot(d, d) * 2.0;
+      vec2 p = vUv * 2.0 - 1.0;                       // -1..1
+      if (uVig > 0.0) m *= 1.0 - uVig * dot(p, p) * 0.5;
+      if (uCurve > 0.0) {                            // rounded tube edge -> black corners
+        vec2 q = abs(p) - vec2(1.0 - uCurve);
+        float d = length(max(q, 0.0)) - uCurve;
+        m *= smoothstep(0.02, -0.02, d);
       }
       gl_FragColor = vec4(m, 1.0);
     }`;
@@ -613,7 +630,7 @@ function compileCrtGL(canvas) {
   return { gl, prog, uni: {
     game: gl.getUniformLocation(prog, "uGame"), filter: gl.getUniformLocation(prog, "uFilter"),
     scan: gl.getUniformLocation(prog, "uScan"), mask: gl.getUniformLocation(prog, "uMask"),
-    vig: gl.getUniformLocation(prog, "uVig"),
+    vig: gl.getUniformLocation(prog, "uVig"), curve: gl.getUniformLocation(prog, "uCurve"),
   } };
 }
 
@@ -623,9 +640,11 @@ function renderCrt() {
   const cv = $("crt-canvas");
   const game = document.querySelector("#dos canvas");
   if (!cv || !game) return;
-  const f = getSetting("filter");
-  const id = FILTER_ID[f] || 0;
-  if (!id) { cv.classList.remove("on"); return; }
+  const def = FILTERS[getSetting("filter")];
+  // Colour-shift / blur lives on the game canvas itself (browser applies it to
+  // the real image); the WebGL overlay handles scanlines/mask/tube.
+  game.style.filter = (def && def.css) || "";
+  if (!def) { cv.classList.remove("on"); return; }
 
   const r = game.getBoundingClientRect();
   if (!r.width || !r.height) return;
@@ -635,15 +654,17 @@ function renderCrt() {
   const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
   if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; crtGL = null; }   // context resize -> recompile
 
+  if (!def.type) { cv.classList.remove("on"); return; }   // CSS-only filter, no overlay
   if (!crtGL) crtGL = compileCrtGL(cv);
   if (!crtGL) { cv.classList.remove("on"); return; }
   const { gl, uni } = crtGL;
   gl.viewport(0, 0, w, h);
   gl.uniform2f(uni.game, GAME_W, GAME_H);
-  gl.uniform1i(uni.filter, id);
-  gl.uniform1f(uni.scan, 0.45);   // scanline depth
-  gl.uniform1f(uni.mask, 0.18);   // RGB mask strength
-  gl.uniform1f(uni.vig, 0.35);    // vignette strength
+  gl.uniform1i(uni.filter, def.type);
+  gl.uniform1f(uni.scan, def.scan);
+  gl.uniform1f(uni.mask, def.mask);
+  gl.uniform1f(uni.vig, def.vig);
+  gl.uniform1f(uni.curve, def.curve);
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   cv.classList.add("on");
@@ -793,6 +814,30 @@ function applyPogoHold() {
   if (btn) btn.dataset.holdMs = getSetting("pogohold");
 }
 
+// Desktop pogo auto-retract: mirror the touch POGO behaviour on the physical
+// Alt key. We observe Alt in the capture phase (so js-dos still gets it and the
+// native pogo toggle happens) and, if Alt was held >= the pogohold threshold,
+// inject one extra Alt tap on release to retract the pogo at the apex — exactly
+// like releasing the on-screen POGO button. Opt-in via the "also apply to
+// desktop controls" checkbox; reuses the same pogohold ms.
+function setupDesktopPogo() {
+  const downAt = {};   // "AltLeft" | "AltRight" -> press timestamp
+  const code = (e) => (e.code === "AltLeft" ? 342 : e.code === "AltRight" ? 346 : 0);
+  window.addEventListener("keydown", (e) => {
+    if (!code(e) || e.repeat) return;
+    downAt[e.code] = Date.now();
+  }, true);
+  window.addEventListener("keyup", (e) => {
+    const gc = code(e); if (!gc) return;
+    const t0 = downAt[e.code]; downAt[e.code] = 0;
+    if (!gameCi || getSetting("pogodesktop") !== "on") return;
+    const ms = getSetting("pogohold");
+    if (ms === "off" || !t0 || (Date.now() - t0) < (parseInt(ms, 10) || 0)) return;
+    setTimeout(() => sendKey(gc, true), 30);
+    setTimeout(() => sendKey(gc, false), 120);
+  }, true);
+}
+
 function setupSettings() {
   // Low thresholds (0/40/80) were removed — a tap shorter than the threshold is
   // the only escape from a stuck-ON pogo, and human taps rarely beat ~80ms, so
@@ -810,6 +855,11 @@ function setupSettings() {
         if (key === "filter") renderCrt();   // re-draw immediately if a game is running
       });
     });
+  const dp = $("set-pogodesktop");
+  if (dp) {
+    dp.checked = getSetting("pogodesktop") === "on";
+    dp.addEventListener("change", () => setSetting("pogodesktop", dp.checked ? "on" : "off"));
+  }
   applyPogoHold();
 }
 
@@ -866,6 +916,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (App && App.addListener) App.addListener("pause", () => captureSave(currentKey));
   } catch (_) {}
   setupSettings();
+  setupDesktopPogo();
   setupTouchControls();
   launchable["keen4"] = "games/keen4.jsdos";   // bundled demo (overridden by server manifest if present)
   setupServerMode().then(deepLink);            // deep-link after the manifest (if any) has loaded
