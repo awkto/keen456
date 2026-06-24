@@ -21,142 +21,147 @@
   <script src="js/jsdos/js-dos.js?v=3"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=30">
+  <link rel="stylesheet" href="css/app.css?v=41">
 </head>
 <body>
-  <!-- ===================== LAUNCHER (the "console") ===================== -->
+  <!-- ===================== LAUNCHER (the multi-game "console") =====================
+       view ∈ {play, howto, settings}; game ∈ {keen4, keen5, keen6}. A game tab is
+       "active" only while view===play. Saved game + Server sync are PER GAME (each
+       game has its own sync key, on/off, device list, conflict modal); How to play
+       + Settings are global. Driven by app.js (setView / selectGame). -->
   <div id="launcher" class="console-wrap">
-    <div class="console" id="console" data-tab="play">
+    <div class="console" id="console" data-view="play" data-game="keen4" data-mview="play">
 
       <!-- top bar -->
       <header class="console-top">
         <div class="brand">
-          <span class="wordmark">KEEN</span>
-          <span class="eps-pill">4 · 5 · 6</span>
+          <span class="wordmark">KEEN <span class="eps-pill">4·5·6</span></span>
           <span class="browser-pill">BROWSER EDITION</span>
         </div>
-        <nav class="tabs-top" role="tablist" aria-label="Sections">
-          <button class="tab-top" data-tab="play">Play</button>
-          <button class="tab-top" data-tab="howto">How to play</button>
-          <button class="tab-top" data-tab="settings">Settings</button>
+        <nav class="nav-top" aria-label="Sections">
+          <button class="nav-btn" data-view="howto">How to play</button>
+          <button class="nav-btn" data-view="settings">Settings</button>
         </nav>
-        <span class="sync-pill" id="sync-pill" hidden><span class="dot"></span><span id="sync-pill-text">Synced</span></span>
       </header>
+
+      <!-- game-selector bar -->
+      <div class="game-bar">
+        <div class="game-bar-label"><span>CHOOSE GAME</span><span class="hairline"></span></div>
+        <div class="game-tabs" id="game-tabs">
+          <button class="game-tab" data-game="keen4" aria-pressed="true">
+            <span class="gt-row"><span class="gt-num">KEEN 4</span><span class="gt-files">Free</span></span>
+            <span class="gt-title">Secret of the Oracle</span>
+            <span class="gt-status"><span class="gt-dot"></span><span class="gt-status-text">Local only</span></span>
+          </button>
+          <button class="game-tab" data-game="keen5" aria-pressed="false">
+            <span class="gt-row"><span class="gt-num">KEEN 5</span><span class="gt-files">Your files</span></span>
+            <span class="gt-title">The Armageddon Machine</span>
+            <span class="gt-status"><span class="gt-dot"></span><span class="gt-status-text">Local only</span></span>
+          </button>
+          <button class="game-tab" data-game="keen6" aria-pressed="false">
+            <span class="gt-row"><span class="gt-num">KEEN 6</span><span class="gt-files">Your files</span></span>
+            <span class="gt-title">Aliens Ate My Babysitter!</span>
+            <span class="gt-status"><span class="gt-dot"></span><span class="gt-status-text">Local only</span></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- mobile: status pill + game switcher / global label (under the header) -->
+      <div class="m-subbar">
+        <span class="m-pill" id="m-pill"><span class="m-pill-dot"></span><span id="m-pill-text">Keen 4 local</span></span>
+        <div class="m-switch" id="m-switch">
+          <button class="m-tab" data-game="keen4">Keen 4</button>
+          <button class="m-tab" data-game="keen5">Keen 5</button>
+          <button class="m-tab" data-game="keen6">Keen 6</button>
+        </div>
+        <div class="m-global" id="m-global"><span class="m-global-ic">🌐</span><span id="m-global-label">Global</span></div>
+      </div>
 
       <div class="console-body" id="console-body">
 
-        <!-- PLAY (hero + per-episode entry points) -->
+        <!-- PLAY (per selected game) -->
         <section class="panel" id="panel-play">
+          <!-- hero -->
           <div class="card hero-card">
-            <button class="hero-poster" id="hero-poster" aria-label="Play Commander Keen 4">
-              <span class="poster-bg"></span>
+            <button class="hero-poster" id="hero-poster" aria-label="Play this game">
+              <span class="poster-bg" id="poster-bg"></span>
               <span class="poster-scan"></span>
               <span class="poster-fg">
                 <span class="poster-title">KEEN</span>
-                <span class="poster-sub">GOODBYE, GALAXY!</span>
+                <span class="poster-sub" id="poster-sub">GOODBYE, GALAXY!</span>
                 <span class="poster-play">▶</span>
               </span>
             </button>
             <div class="hero-foot">
-              <p class="hero-blurb">Commander Keen 4·5·6 — <em>Goodbye, Galaxy!</em> &amp; <em>Aliens Ate
-                My Babysitter</em> — running 100% in your browser. Keen 4 shareware is free; <a href="#" id="show-byo">load
-                your own Keen 5/6 files →</a></p>
+              <p class="hero-blurb"><span id="hero-blurb-text"></span>
+                <a href="#" id="hero-link" hidden></a></p>
+              <button class="play-btn" id="play-main">▶ Play</button>
             </div>
           </div>
 
-          <!-- Per-episode entry points. app.js fills #ep-action per episode:
-               Keen 4 is always playable; Keen 5/6 show ▶ Play when a save/bundle
-               exists, otherwise a "Load files" affordance. -->
-          <div class="episodes" id="episodes">
-            <div class="ep-card" data-ep="4">
-              <div class="ep-head"><span class="ep-num">4</span>
-                <div class="ep-name"><span class="ep-title">Secret of the Oracle</span>
-                  <span class="badge free">free shareware</span></div>
+          <!-- right rail -->
+          <div class="rail">
+            <!-- Saved game (per game) -->
+            <div class="card" id="saved-card">
+              <div class="card-head"><span class="card-title">Saved game</span>
+                <span class="game-badge" id="saved-badge">Keen 4</span></div>
+              <div id="saved-has" hidden>
+                <div class="save-size" id="saved-size">— KB</div>
+                <div class="save-btns">
+                  <button class="btn-2" id="saved-download">Download</button>
+                  <button class="btn-2" id="saved-upload">Upload</button>
+                  <button class="btn-danger" id="saved-delete">Delete</button>
+                </div>
               </div>
-              <div class="ep-action" id="ep-action-4"></div>
-            </div>
-            <div class="ep-card" data-ep="5">
-              <div class="ep-head"><span class="ep-num">5</span>
-                <div class="ep-name"><span class="ep-title">The Armageddon Machine</span>
-                  <span class="badge byo">bring your own data</span></div>
+              <div id="saved-none" hidden>
+                <div class="empty-box">No saved game yet — play to create one, or upload a <code>.jsdos</code>.</div>
+                <button class="btn-2 full" id="saved-upload-empty">⤒ Upload a saved game</button>
               </div>
-              <div class="ep-action" id="ep-action-5"></div>
             </div>
-            <div class="ep-card" data-ep="6">
-              <div class="ep-head"><span class="ep-num">6</span>
-                <div class="ep-name"><span class="ep-title">Aliens Ate My Babysitter</span>
-                  <span class="badge byo">bring your own data</span></div>
+
+            <!-- Server sync (per game) — revealed only when a backend is present -->
+            <div class="card" id="sync-card" hidden>
+              <div class="card-head"><span class="card-title">Server sync</span>
+                <div class="card-head-right">
+                  <span class="game-badge" id="sync-badge">Keen 4</span>
+                  <label class="switch" title="Sync this game's save to the server">
+                    <input type="checkbox" id="sync-toggle"><span class="switch-knob"></span>
+                  </label>
+                </div></div>
+              <p class="card-note">Each game has its own key — link them independently.</p>
+              <div class="key-row">
+                <code id="sync-key">—</code>
+                <button id="sync-copy" class="btn-2 btn-key">Copy</button>
               </div>
-              <div class="ep-action" id="ep-action-6"></div>
+              <div id="sync-on-body" hidden>
+                <div class="device-rows" id="device-rows"></div>
+                <div class="link-row" id="link-row" hidden>
+                  <input id="sync-key-input" type="text" placeholder="e.g. K7QF" spellcheck="false"
+                         autocomplete="off" autocapitalize="characters">
+                  <button id="sync-apply" class="btn-2">Link</button>
+                </div>
+                <button id="sync-link-open" class="btn-dashed">+ Link another device</button>
+              </div>
+              <div id="sync-off-body" hidden>
+                <div class="off-note" id="sync-off-note">Sync is off for this game — this save stays in this browser only.
+                  Turn it on to back up and share across devices.</div>
+              </div>
+              <p id="sync-status" class="card-note status-line"></p>
+              <p class="card-note"><button id="sync-disconnect" class="linklike" hidden>Stop syncing this game on this device</button></p>
             </div>
-          </div>
-
-          <!-- Server/kiosk mode: populated from games/manifest.json when the app
-               runs from a container with a mounted data dir. Replaces the episode
-               cards above with the detected games. -->
-          <div class="card" id="server-games" hidden>
-            <div class="card-head"><span class="card-title">Games</span><span class="card-sub">on this server</span></div>
-            <div id="server-games-list"></div>
-          </div>
-
-          <p id="play-sync-note" class="play-sync-note"></p>
-          <p class="howto-link-m"><a href="#" id="show-howto-m">How to play →</a></p>
-        </section>
-
-        <!-- SAVES (one row per episode) -->
-        <section class="panel" id="panel-saves">
-          <div class="card">
-            <div class="card-head"><span class="card-title">Saved games</span><span class="card-sub">this browser</span></div>
-            <div class="save-list" id="saves-list"></div>
-            <p class="muted-note" id="saves-empty">Games you've played or imported stay saved in this browser and
-              survive reloads &amp; pressing Back. <strong>Download</strong> a copy — it's a <code>.jsdos</code> zip
-              of your save files.</p>
-            <div class="save-actions-foot">
-              <button id="save-upload" class="btn-2">⤒ Upload a saved game (.jsdos)</button>
+            <div class="card" id="sync-absent" hidden>
+              <div class="card-title">Server sync</div>
+              <p class="card-note">Server sync isn't available on this host — saves stay in this browser.
+                Use <strong>Download</strong> to move them by hand.</p>
             </div>
-            <input id="save-file-input" type="file" accept=".jsdos,.zip,.bin,application/octet-stream" hidden>
-          </div>
-        </section>
-
-        <!-- SYNC -->
-        <section class="panel" id="panel-sync">
-          <!-- app.js reveals the whole card only when a server backend is present
-               (probes /api/health); on GitHub Pages / static hosts it stays hidden. -->
-          <div class="card" id="cloud-card" hidden>
-            <div class="card-head">
-              <span class="card-title">Server sync</span>
-              <label class="switch" title="Sync saves to this server">
-                <input type="checkbox" id="set-sync"><span class="switch-knob"></span>
-              </label>
-            </div>
-            <div class="key-row">
-              <code id="sync-id">—</code>
-              <button id="sync-copy" class="btn-2 btn-key">Copy</button>
-            </div>
-            <div class="device-rows">
-              <div class="device-row"><span class="dot good"></span>This device<span class="dim"> · now</span></div>
-            </div>
-            <div class="link-row" id="link-row" hidden>
-              <input id="sync-id-input" type="text" placeholder="e.g. K7QF" spellcheck="false"
-                     autocomplete="off" autocapitalize="characters">
-              <button id="sync-apply" class="btn-2">Link</button>
-            </div>
-            <button id="sync-link-open" class="btn-dashed">+ Link another device</button>
-            <p id="cloud-status" class="muted-note"></p>
-            <p class="muted-note"><button id="sync-disconnect" class="linklike">Stop syncing on this device</button>
-              — keeps your saves here <em>and</em> the cloud copies.</p>
-          </div>
-          <div class="card" id="cloud-absent-note" hidden>
-            <div class="card-title">Server sync</div>
-            <p class="muted-note">Server sync isn't available on this host — saves stay in this browser.
-              Use <strong>Download</strong> on the Saves tab to move them by hand.</p>
           </div>
         </section>
 
-        <!-- HOW TO PLAY -->
+        <!-- HOW TO PLAY (global) -->
         <section class="panel" id="panel-howto">
           <div class="card">
-            <div class="card-title big">Controls</div>
+            <div class="card-head-baseline"><span class="card-title big">Controls</span>
+              <span class="card-sub">same for all three games</span></div>
             <div class="controls-grid">
               <div class="ctl"><span class="cap">← →</span>walk</div>
               <div class="ctl"><span class="cap">Ctrl</span>jump</div>
@@ -174,11 +179,11 @@
           </div>
         </section>
 
-        <!-- SETTINGS -->
+        <!-- SETTINGS (global) -->
         <section class="panel" id="panel-settings">
           <div class="card">
-            <div class="card-head"><span class="card-title big">Settings</span>
-              <span class="card-sub">applied when you start · saved automatically</span></div>
+            <div class="card-head-baseline"><span class="card-title big">Settings</span>
+              <span class="card-sub">global · apply to all three games · saved automatically</span></div>
             <div class="settings-grid">
               <div class="set-row"><span class="set-label">Engine</span>
                 <div class="seg" data-setting="engine">
@@ -202,11 +207,9 @@
               <div class="set-row"><span class="set-label">Aspect ratio</span>
                 <select id="set-aspect">
                   <option value="4/3">4:3 — classic CRT (default)</option>
-                  <option value="AsIs">As-is — sharp 16:10</option>
-                  <option value="5/4">5:4</option>
+                  <option value="AsIs">As-is — sharp</option>
                   <option value="16/10">16:10</option>
                   <option value="16/9">16:9 — widescreen</option>
-                  <option value="1/1">1:1 — square pixels</option>
                   <option value="Fit">Fit window</option>
                 </select>
               </div>
@@ -215,19 +218,18 @@
                   <option value="off">Off — crisp pixels</option>
                   <option value="scanlines">Scanlines</option>
                   <option value="crt">CRT — scanlines + mask + vignette</option>
-                  <option value="curved">CRT curved</option>
-                  <option value="rgb">RGB — aperture mask</option>
                   <option value="soft">Soft — blurry pixels</option>
                   <option value="amber">Amber — monochrome</option>
-                  <option value="green">Green — phosphor</option>
                 </select>
               </div>
               <div class="set-row"><span class="set-label">Pogo auto-retract</span>
                 <select id="set-pogohold">
-                  <option value="off">Off — pogo stays out</option>
-                  <option value="130">130 ms</option>
+                  <option value="off">Off</option>
+                  <option value="120">120 ms</option>
+                  <option value="150">150 ms</option>
                   <option value="180">180 ms (default)</option>
-                  <option value="250">250 ms</option>
+                  <option value="240">240 ms</option>
+                  <option value="300">300 ms</option>
                 </select>
               </div>
               <div class="set-row set-row-check"><span class="set-label">Pogo on desktop Alt</span>
@@ -241,12 +243,13 @@
 
       </div>
 
-      <!-- mobile bottom tab bar -->
-      <nav class="tabs-bottom" role="tablist" aria-label="Sections">
-        <button class="tab-b" data-tab="play"><span class="ic">▶</span><span>Play</span></button>
-        <button class="tab-b" data-tab="saves"><span class="ic">💾</span><span>Saves</span></button>
-        <button class="tab-b" data-tab="sync"><span class="ic">☁</span><span>Sync</span></button>
-        <button class="tab-b" data-tab="settings"><span class="ic">⚙</span><span>Settings</span></button>
+      <!-- mobile bottom tab bar (Play / Saves / Sync / Guide / Settings) -->
+      <nav class="tabs-bottom" aria-label="Sections">
+        <button class="tab-b" data-mview="play"><span class="ic">▶</span><span>Play</span></button>
+        <button class="tab-b" data-mview="saves"><span class="ic">💾</span><span>Saves</span></button>
+        <button class="tab-b" data-mview="sync"><span class="ic">☁</span><span>Sync</span></button>
+        <button class="tab-b" data-mview="howto"><span class="ic">⌨</span><span>Guide</span></button>
+        <button class="tab-b" data-mview="settings"><span class="ic">⚙</span><span>Settings</span></button>
       </nav>
     </div>
 
@@ -280,38 +283,43 @@
     </div>
   </div>
 
-  <!-- Sync conflict: keep cloud vs keep local (shown only when BOTH sides have a
-       save). The choice is applied across ALL episodes (aggregate): keep cloud
-       pulls every server episode; keep this browser pushes every local one. -->
+  <!-- Per-game first-sync conflict modal: keep cloud vs keep this browser. Shown
+       once at link time, only when this game's key already has a cloud save AND
+       this browser also has a local save for that game. The choice operates on
+       that ONE game; the other two are untouched. -->
   <div class="overlay" id="conflict-modal" hidden>
     <div class="modal-box wide">
-      <h3>Saved games found on both sides</h3>
-      <p class="muted-note">This browser and key <code id="conflict-key">—</code> each have saved games.
-        Keep one set — the other side's copies are replaced for every episode.</p>
+      <div class="conflict-head">
+        <div class="game-badge dot-badge" id="conflict-badge"><span class="cb-dot"></span>Keen 4 — Secret of the Oracle</div>
+        <h3>Two saves found for this key</h3>
+        <p class="muted-note">This browser and Keen <span id="conflict-num">4</span>'s key
+          <code id="conflict-key">—</code> each have a saved game. Keep one — the other is replaced.
+          Your other Keen games are unaffected.</p>
+      </div>
       <div class="conflict-tiles">
         <button class="tile" id="tile-cloud" data-choice="cloud">
           <span class="tile-badge"></span>
           <span class="tile-ic">☁</span>
-          <span class="tile-title">Cloud saves</span>
+          <span class="tile-title">Cloud save</span>
           <span class="tile-size" id="tile-cloud-size">—</span>
-          <span class="tile-desc">From the server. Downloads &amp; replaces this browser's saves.</span>
+          <span class="tile-desc">From the server. Downloads &amp; replaces this browser's <span class="cf-game">Keen 4</span> save.</span>
         </button>
         <button class="tile" id="tile-local" data-choice="local">
           <span class="tile-badge"></span>
           <span class="tile-ic">💾</span>
           <span class="tile-title">This browser</span>
           <span class="tile-size" id="tile-local-size">—</span>
-          <span class="tile-desc">Your local saves. Uploads &amp; replaces the cloud copies.</span>
+          <span class="tile-desc">Your local save. Uploads &amp; replaces <span class="cf-game">Keen 4</span>'s cloud copy.</span>
         </button>
       </div>
       <div class="modal-foot">
         <button class="btn-ghost" id="conflict-cancel">Cancel</button>
-        <button class="play-btn inline" id="conflict-confirm">Keep cloud saves</button>
+        <button class="play-btn inline" id="conflict-confirm">Keep cloud save</button>
       </div>
     </div>
   </div>
 
-  <!-- Play guard: shown when this device and the server disagree for the episode
+  <!-- Play guard: shown when this device and the server disagree for the game
        being launched, so a stale or diverged save is never played (and silently
        overwritten) without a choice. -->
   <div class="overlay" id="sync-play-modal" hidden>
@@ -385,6 +393,6 @@
   <!-- Sets window.KEEN_SYNC_BASE before app.js. Empty on web (same-origin sync);
        the APK ships a copy pointing at a real server. Must load before app.js. -->
   <script src="js/sync-config.js?v=1"></script>
-  <script src="js/app.js?v=40"></script>
+  <script src="js/app.js?v=50"></script>
 </body>
 </html>
