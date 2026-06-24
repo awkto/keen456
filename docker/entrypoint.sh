@@ -114,4 +114,12 @@ else
   echo "[keen456] no game data found; running in bring-your-own-data mode"
 fi
 
+# Server-side save slots: a tiny API behind nginx's /api/ proxy. Saves live in
+# SAVE_DIR (default /saves) — mount a volume there (`-v keen456-saves:/saves`) to
+# keep them across container updates (watchtower recreates the container).
+export SAVE_DIR="${SAVE_DIR:-/saves}"
+mkdir -p "$SAVE_DIR"
+echo "[keen456] starting saves-api (SAVE_DIR=$SAVE_DIR)"
+python3 /saves-api.py &
+
 exec nginx -g 'daemon off;'

@@ -9,8 +9,8 @@ LABEL org.opencontainers.image.title="keen456" \
       org.opencontainers.image.source="https://github.com/awkto/keen456" \
       org.opencontainers.image.version="${VERSION}"
 
-# zip is used by the entrypoint to build .jsdos bundles from mounted data files
-RUN apk add --no-cache zip
+# zip builds .jsdos bundles from mounted data files; python3 runs the save-slots API
+RUN apk add --no-cache zip python3
 
 # static site
 COPY index.html /usr/share/nginx/html/index.html
@@ -19,9 +19,13 @@ COPY js/   /usr/share/nginx/html/js/
 COPY games/ /usr/share/nginx/html/games/
 COPY icons/ /usr/share/nginx/html/icons/
 
+COPY docker/saves-api.py /saves-api.py
 COPY docker/default.conf /etc/nginx/conf.d/default.conf
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Server-side save slots live here; mount a volume to persist them across updates.
+VOLUME /saves
 
 EXPOSE 80
 ENTRYPOINT ["/entrypoint.sh"]

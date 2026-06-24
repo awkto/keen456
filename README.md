@@ -43,6 +43,17 @@ Select (or drop) these files for the episode you own:
   crisp vs. smooth pixels, and the touch-controls mode (auto/on/off).
 - **Saves persist** automatically in your browser (IndexedDB, per episode) and survive reloads.
 
+### Server sync (container only)
+
+When the site is served by the container (not a static host like GitHub Pages), an optional
+**☁ Server sync** card appears. Turn it on to keep your saved games on the server too, so they
+outlive the browser and can be shared across devices. Each browser gets a long **sync key**; copy
+it to another device (or paste one in via *Use this key*) to share the same server-side saves.
+Newer save wins on each side. The feature is opt-in (off by default) and hidden entirely on static hosts.
+
+Saves are stored in `SAVE_DIR` (default `/saves`) scoped by sync key — **mount a volume there**
+so they survive container updates: `-v keen456-saves:/saves`.
+
 ## Project layout
 
 ```
@@ -63,8 +74,11 @@ A container image is published to Docker Hub as **`awkto/keen456`** by GitHub Ac
 docker run -d --name keen456 --restart unless-stopped \
   -p 127.0.0.1:5023:80 \
   -v /path/to/keen-data:/data:ro \
+  -v keen456-saves:/saves \
   awkto/keen456:latest
 ```
+
+The `-v keen456-saves:/saves` volume keeps server-side saves (see *Server sync*) across updates.
 
 **Server / kiosk mode:** mount a directory of your own Keen files at `/data`. On startup the
 container detects each episode, builds its `.jsdos` bundle, and writes `games/manifest.json` — the

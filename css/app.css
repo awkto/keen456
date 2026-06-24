@@ -239,6 +239,19 @@ html, body {
 .save-btn.play { background: var(--good); color: #06200f; border-color: var(--good); }
 .save-btn.danger { background: #3a1a1f; color: #ff9a9a; }
 
+/* Server-sync card */
+.cloud-toggle { display: flex; flex-direction: row; align-items: center; gap: 0.5rem; cursor: pointer; margin: 0.4rem 0 0.8rem; }
+.cloud-toggle input { width: auto; }
+.sync-dependent.dim { opacity: 0.45; pointer-events: none; }
+.sync-key-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.sync-key-row code {
+  font-size: 1rem; font-weight: 700; letter-spacing: 0.06em;
+  background: #0006; padding: 0.25em 0.6em; border-radius: 7px; color: var(--accent2);
+}
+.sync-key-row .save-btn, .sync-link-row .save-btn { flex: 0 0 auto; }
+.sync-link-row { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.5rem 0; }
+.sync-link-row input { flex: 1 1 12rem; min-width: 0; text-transform: uppercase; letter-spacing: 0.06em; }
+
 /* ---- settings panel ---- */
 .settings-card { grid-column: 1 / -1; }
 .setting {

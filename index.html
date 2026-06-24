@@ -12,10 +12,12 @@
   <!-- js-dos v8.4.0 (DOSBox compiled to WebAssembly) — vendored locally (js/jsdos/)
        so the app runs fully offline; the emulator wasm path is set via Dos() pathPrefix. -->
   <link rel="stylesheet" href="js/jsdos/js-dos.css">
-  <script src="js/jsdos/js-dos.js"></script>
+  <!-- v=2: vendored js-dos patched to drop the F6/F7 realtime-state keyboard
+       shortcuts (global save/load-state hijack) and relabel the badges. -->
+  <script src="js/jsdos/js-dos.js?v=2"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=28">
+  <link rel="stylesheet" href="css/app.css?v=29">
 </head>
 <body>
   <header id="topbar">
@@ -39,6 +41,29 @@
       <p>Games you've played or imported stay saved in this browser — tap to play, no re-import needed.
         Use ⤓ Download on a game to back it up or move it to another device.</p>
       <div id="saves-list"></div>
+    </section>
+
+    <!-- Server-side save sync. Hidden by default; app.js reveals it only when the
+         container backend is present (probes /api/health) — so on GitHub Pages /
+         static hosts it never appears. -->
+    <section class="card cloud-card" id="cloud-card" hidden>
+      <h2>☁ Server sync</h2>
+      <p>This server can keep your saved games so they survive clearing this browser, and
+         share them across devices that use the same key. On each side the newer save wins.</p>
+      <label class="setting cloud-toggle">
+        <input type="checkbox" id="set-sync"> Sync my saved games to this server
+      </label>
+      <div class="sync-dependent">
+        <p class="sync-key-row">Your sync key: <code id="sync-id">—</code>
+          <button id="sync-copy" class="save-btn">Copy</button></p>
+        <p class="dz-hint">To reach these saves on another device, open this site there and enter this key.</p>
+        <div class="sync-link-row">
+          <input id="sync-id-input" type="text" placeholder="ABCD-EFGH-JKLM-NPQR"
+                 spellcheck="false" autocomplete="off" autocapitalize="characters">
+          <button id="sync-apply" class="save-btn">Use this key</button>
+        </div>
+        <p id="cloud-status" class="save-info"></p>
+      </div>
     </section>
 
     <section class="card demo-card" id="demo-card">
@@ -201,6 +226,9 @@
     </p>
   </footer>
 
-  <script src="js/app.js?v=38"></script>
+  <!-- Sets window.KEEN_SYNC_BASE before app.js. Empty on web (same-origin sync);
+       the APK ships a copy pointing at a real server. Must load before app.js. -->
+  <script src="js/sync-config.js?v=1"></script>
+  <script src="js/app.js?v=39"></script>
 </body>
 </html>
