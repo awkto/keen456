@@ -9,158 +9,324 @@
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png?v=2">
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png?v=2">
   <link rel="apple-touch-icon" href="icons/icon-180.png?v=2">
-  <!-- js-dos v8.4.0 (DOSBox compiled to WebAssembly) — vendored locally (js/jsdos/)
-       so the app runs fully offline; the emulator wasm path is set via Dos() pathPrefix. -->
+  <!-- UI fonts (Manrope + JetBrains Mono) are self-hosted in css/fonts via @font-face
+       in app.css — no online resources, so the app (and APK) run fully offline. -->
+  <!-- js-dos v8 (DOSBox → WebAssembly) — vendored locally (js/jsdos/) so the app runs
+       fully offline; the emulator wasm path is set via Dos() pathPrefix in app.js. -->
   <link rel="stylesheet" href="js/jsdos/js-dos.css">
-  <!-- v=2: vendored js-dos patched to drop the F6/F7 realtime-state keyboard
-       shortcuts (global save/load-state hijack) and relabel the badges. -->
-  <script src="js/jsdos/js-dos.js?v=2"></script>
+  <!-- v=3: vendored js-dos patched to drop the F6/F7 realtime-state keyboard
+       shortcuts (global save/load-state hijack), relabel the badges SS/LS, and
+       always show the LS (load-state) button on DOSBox-X so a synced save state
+       can be loaded. -->
+  <script src="js/jsdos/js-dos.js?v=3"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=29">
+  <link rel="stylesheet" href="css/app.css?v=30">
 </head>
 <body>
-  <header id="topbar">
-    <h1>Commander&nbsp;Keen <span class="eps">4 · 5 · 6</span></h1>
-    <p class="tagline">Goodbye, Galaxy! &amp; Aliens Ate My Babysitter — in your browser.</p>
-  </header>
+  <!-- ===================== LAUNCHER (the "console") ===================== -->
+  <div id="launcher" class="console-wrap">
+    <div class="console" id="console" data-tab="play">
 
-  <main id="launcher">
-    <!-- Server/kiosk mode: populated from games/manifest.json when the app runs
-         from the container with a mounted data dir. Hides the cards below. -->
-    <section id="server-games" class="card" hidden>
-      <h2>Games</h2>
-      <p>Detected on the server — click to play.</p>
-      <div id="server-games-list"></div>
-    </section>
-
-    <!-- Your games: persisted/imported episodes surface here as prominent Play
-         buttons, front and centre. Hidden until there's at least one (refreshSavesUI). -->
-    <section class="card saves-card" id="saves-card" hidden>
-      <h2>💾 Your games</h2>
-      <p>Games you've played or imported stay saved in this browser — tap to play, no re-import needed.
-        Use ⤓ Download on a game to back it up or move it to another device.</p>
-      <div id="saves-list"></div>
-    </section>
-
-    <!-- Server-side save sync. Hidden by default; app.js reveals it only when the
-         container backend is present (probes /api/health) — so on GitHub Pages /
-         static hosts it never appears. -->
-    <section class="card cloud-card" id="cloud-card" hidden>
-      <h2>☁ Server sync</h2>
-      <p>This server can keep your saved games so they survive clearing this browser, and
-         share them across devices that use the same key. On each side the newer save wins.</p>
-      <label class="setting cloud-toggle">
-        <input type="checkbox" id="set-sync"> Sync my saved games to this server
-      </label>
-      <div class="sync-dependent">
-        <p class="sync-key-row">Your sync key: <code id="sync-id">—</code>
-          <button id="sync-copy" class="save-btn">Copy</button></p>
-        <p class="dz-hint">To reach these saves on another device, open this site there and enter this key.</p>
-        <div class="sync-link-row">
-          <input id="sync-id-input" type="text" placeholder="ABCD-EFGH-JKLM-NPQR"
-                 spellcheck="false" autocomplete="off" autocapitalize="characters">
-          <button id="sync-apply" class="save-btn">Use this key</button>
+      <!-- top bar -->
+      <header class="console-top">
+        <div class="brand">
+          <span class="wordmark">KEEN</span>
+          <span class="eps-pill">4 · 5 · 6</span>
+          <span class="browser-pill">BROWSER EDITION</span>
         </div>
-        <p id="cloud-status" class="save-info"></p>
+        <nav class="tabs-top" role="tablist" aria-label="Sections">
+          <button class="tab-top" data-tab="play">Play</button>
+          <button class="tab-top" data-tab="howto">How to play</button>
+          <button class="tab-top" data-tab="settings">Settings</button>
+        </nav>
+        <span class="sync-pill" id="sync-pill" hidden><span class="dot"></span><span id="sync-pill-text">Synced</span></span>
+      </header>
+
+      <div class="console-body" id="console-body">
+
+        <!-- PLAY (hero + per-episode entry points) -->
+        <section class="panel" id="panel-play">
+          <div class="card hero-card">
+            <button class="hero-poster" id="hero-poster" aria-label="Play Commander Keen 4">
+              <span class="poster-bg"></span>
+              <span class="poster-scan"></span>
+              <span class="poster-fg">
+                <span class="poster-title">KEEN</span>
+                <span class="poster-sub">GOODBYE, GALAXY!</span>
+                <span class="poster-play">▶</span>
+              </span>
+            </button>
+            <div class="hero-foot">
+              <p class="hero-blurb">Commander Keen 4·5·6 — <em>Goodbye, Galaxy!</em> &amp; <em>Aliens Ate
+                My Babysitter</em> — running 100% in your browser. Keen 4 shareware is free; <a href="#" id="show-byo">load
+                your own Keen 5/6 files →</a></p>
+            </div>
+          </div>
+
+          <!-- Per-episode entry points. app.js fills #ep-action per episode:
+               Keen 4 is always playable; Keen 5/6 show ▶ Play when a save/bundle
+               exists, otherwise a "Load files" affordance. -->
+          <div class="episodes" id="episodes">
+            <div class="ep-card" data-ep="4">
+              <div class="ep-head"><span class="ep-num">4</span>
+                <div class="ep-name"><span class="ep-title">Secret of the Oracle</span>
+                  <span class="badge free">free shareware</span></div>
+              </div>
+              <div class="ep-action" id="ep-action-4"></div>
+            </div>
+            <div class="ep-card" data-ep="5">
+              <div class="ep-head"><span class="ep-num">5</span>
+                <div class="ep-name"><span class="ep-title">The Armageddon Machine</span>
+                  <span class="badge byo">bring your own data</span></div>
+              </div>
+              <div class="ep-action" id="ep-action-5"></div>
+            </div>
+            <div class="ep-card" data-ep="6">
+              <div class="ep-head"><span class="ep-num">6</span>
+                <div class="ep-name"><span class="ep-title">Aliens Ate My Babysitter</span>
+                  <span class="badge byo">bring your own data</span></div>
+              </div>
+              <div class="ep-action" id="ep-action-6"></div>
+            </div>
+          </div>
+
+          <!-- Server/kiosk mode: populated from games/manifest.json when the app
+               runs from a container with a mounted data dir. Replaces the episode
+               cards above with the detected games. -->
+          <div class="card" id="server-games" hidden>
+            <div class="card-head"><span class="card-title">Games</span><span class="card-sub">on this server</span></div>
+            <div id="server-games-list"></div>
+          </div>
+
+          <p id="play-sync-note" class="play-sync-note"></p>
+          <p class="howto-link-m"><a href="#" id="show-howto-m">How to play →</a></p>
+        </section>
+
+        <!-- SAVES (one row per episode) -->
+        <section class="panel" id="panel-saves">
+          <div class="card">
+            <div class="card-head"><span class="card-title">Saved games</span><span class="card-sub">this browser</span></div>
+            <div class="save-list" id="saves-list"></div>
+            <p class="muted-note" id="saves-empty">Games you've played or imported stay saved in this browser and
+              survive reloads &amp; pressing Back. <strong>Download</strong> a copy — it's a <code>.jsdos</code> zip
+              of your save files.</p>
+            <div class="save-actions-foot">
+              <button id="save-upload" class="btn-2">⤒ Upload a saved game (.jsdos)</button>
+            </div>
+            <input id="save-file-input" type="file" accept=".jsdos,.zip,.bin,application/octet-stream" hidden>
+          </div>
+        </section>
+
+        <!-- SYNC -->
+        <section class="panel" id="panel-sync">
+          <!-- app.js reveals the whole card only when a server backend is present
+               (probes /api/health); on GitHub Pages / static hosts it stays hidden. -->
+          <div class="card" id="cloud-card" hidden>
+            <div class="card-head">
+              <span class="card-title">Server sync</span>
+              <label class="switch" title="Sync saves to this server">
+                <input type="checkbox" id="set-sync"><span class="switch-knob"></span>
+              </label>
+            </div>
+            <div class="key-row">
+              <code id="sync-id">—</code>
+              <button id="sync-copy" class="btn-2 btn-key">Copy</button>
+            </div>
+            <div class="device-rows">
+              <div class="device-row"><span class="dot good"></span>This device<span class="dim"> · now</span></div>
+            </div>
+            <div class="link-row" id="link-row" hidden>
+              <input id="sync-id-input" type="text" placeholder="e.g. K7QF" spellcheck="false"
+                     autocomplete="off" autocapitalize="characters">
+              <button id="sync-apply" class="btn-2">Link</button>
+            </div>
+            <button id="sync-link-open" class="btn-dashed">+ Link another device</button>
+            <p id="cloud-status" class="muted-note"></p>
+            <p class="muted-note"><button id="sync-disconnect" class="linklike">Stop syncing on this device</button>
+              — keeps your saves here <em>and</em> the cloud copies.</p>
+          </div>
+          <div class="card" id="cloud-absent-note" hidden>
+            <div class="card-title">Server sync</div>
+            <p class="muted-note">Server sync isn't available on this host — saves stay in this browser.
+              Use <strong>Download</strong> on the Saves tab to move them by hand.</p>
+          </div>
+        </section>
+
+        <!-- HOW TO PLAY -->
+        <section class="panel" id="panel-howto">
+          <div class="card">
+            <div class="card-title big">Controls</div>
+            <div class="controls-grid">
+              <div class="ctl"><span class="cap">← →</span>walk</div>
+              <div class="ctl"><span class="cap">Ctrl</span>jump</div>
+              <div class="ctl"><span class="cap">Alt</span>pogo stick</div>
+              <div class="ctl"><span class="cap">Space</span>fire / shoot</div>
+              <div class="ctl"><span class="cap">↑ ↓</span>look up / down · enter doors</div>
+              <div class="ctl"><span class="cap">Enter</span>confirm · <span class="cap">Esc</span>menu / pause</div>
+              <div class="ctl"><span class="cap">F2</span>save · <span class="cap">F3</span>load (in-game menu)</div>
+              <div class="ctl"><span class="cap">F10</span>+ <span class="cap">Y</span>quit to map</div>
+            </div>
+            <p class="howto-note">To save, open the in-game menu (<strong>Esc</strong>) and choose <strong>Save Game</strong>
+              — progress is then kept in this browser. On phones &amp; tablets the screen splits: the game on top, and a
+              movement joystick + <strong>Shoot</strong>/<strong>Pogo</strong>/<strong>Jump</strong> below.
+              <strong>Pogo</strong> fires Pogo+Jump together for the high super-bounce that's hard to time on touch.</p>
+          </div>
+        </section>
+
+        <!-- SETTINGS -->
+        <section class="panel" id="panel-settings">
+          <div class="card">
+            <div class="card-head"><span class="card-title big">Settings</span>
+              <span class="card-sub">applied when you start · saved automatically</span></div>
+            <div class="settings-grid">
+              <div class="set-row"><span class="set-label">Engine</span>
+                <div class="seg" data-setting="engine">
+                  <button data-value="dosbox">DOSBox</button>
+                  <button data-value="dosboxX">DOSBox-X</button>
+                </div>
+              </div>
+              <div class="set-row pixels-row"><span class="set-label">Pixels</span>
+                <div class="seg" data-setting="rendering">
+                  <button data-value="pixelated">Crisp</button>
+                  <button data-value="smooth">Smooth</button>
+                </div>
+              </div>
+              <div class="set-row"><span class="set-label">Touch controls</span>
+                <div class="seg" data-setting="touch">
+                  <button data-value="auto">Auto</button>
+                  <button data-value="on">On</button>
+                  <button data-value="off">Off</button>
+                </div>
+              </div>
+              <div class="set-row"><span class="set-label">Aspect ratio</span>
+                <select id="set-aspect">
+                  <option value="4/3">4:3 — classic CRT (default)</option>
+                  <option value="AsIs">As-is — sharp 16:10</option>
+                  <option value="5/4">5:4</option>
+                  <option value="16/10">16:10</option>
+                  <option value="16/9">16:9 — widescreen</option>
+                  <option value="1/1">1:1 — square pixels</option>
+                  <option value="Fit">Fit window</option>
+                </select>
+              </div>
+              <div class="set-row"><span class="set-label">Screen filter</span>
+                <select id="set-filter">
+                  <option value="off">Off — crisp pixels</option>
+                  <option value="scanlines">Scanlines</option>
+                  <option value="crt">CRT — scanlines + mask + vignette</option>
+                  <option value="curved">CRT curved</option>
+                  <option value="rgb">RGB — aperture mask</option>
+                  <option value="soft">Soft — blurry pixels</option>
+                  <option value="amber">Amber — monochrome</option>
+                  <option value="green">Green — phosphor</option>
+                </select>
+              </div>
+              <div class="set-row"><span class="set-label">Pogo auto-retract</span>
+                <select id="set-pogohold">
+                  <option value="off">Off — pogo stays out</option>
+                  <option value="130">130 ms</option>
+                  <option value="180">180 ms (default)</option>
+                  <option value="250">250 ms</option>
+                </select>
+              </div>
+              <div class="set-row set-row-check"><span class="set-label">Pogo on desktop Alt</span>
+                <label class="switch" title="Mirror the on-screen Pogo on the physical Alt key">
+                  <input type="checkbox" id="set-pogodesktop"><span class="switch-knob"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+
       </div>
-    </section>
 
-    <section class="card demo-card" id="demo-card">
-      <h2>Keen 4 <span class="badge free">free shareware</span></h2>
-      <p>Secret of the Oracle — episode 4 shareware (v1.4). Freely redistributable, no files needed.</p>
-      <button id="play-keen4" class="play-btn">▶ Play Keen 4 (demo)</button>
-    </section>
+      <!-- mobile bottom tab bar -->
+      <nav class="tabs-bottom" role="tablist" aria-label="Sections">
+        <button class="tab-b" data-tab="play"><span class="ic">▶</span><span>Play</span></button>
+        <button class="tab-b" data-tab="saves"><span class="ic">💾</span><span>Saves</span></button>
+        <button class="tab-b" data-tab="sync"><span class="ic">☁</span><span>Sync</span></button>
+        <button class="tab-b" data-tab="settings"><span class="ic">⚙</span><span>Settings</span></button>
+      </nav>
+    </div>
 
-    <section class="card byo-card" id="byo-card">
-      <h2>Keen 5 &amp; 6 <span class="badge byo">bring your own data</span></h2>
-      <p>
-        Keen 5 (<em>The Armageddon Machine</em>) and Keen 6 (<em>Aliens Ate My Babysitter</em>) are
-        commercial — buy them on <a href="https://www.gog.com/game/commander_keen_complete_pack" target="_blank" rel="noopener">GOG</a>
+    <p class="legal-foot">Powered by <a href="https://js-dos.com" target="_blank" rel="noopener">js-dos</a>
+      (DOSBox → WebAssembly) · <a href="https://github.com/awkto/keen456" target="_blank" rel="noopener">Source on GitHub</a>
+      · Commander Keen © id Software. Keen 4 shareware is freely redistributable; Keen 5/6 data are not bundled — supply your own.</p>
+  </div>
+
+  <!-- ===================== MODALS ===================== -->
+
+  <!-- Bring-your-own-files -->
+  <div class="overlay" id="byo-modal" hidden>
+    <div class="modal-box">
+      <button class="modal-x" id="byo-close" aria-label="Close">✕</button>
+      <h3>Load your own game files</h3>
+      <p class="muted-note">Keen 5 (<em>The Armageddon Machine</em>) and Keen 6 (<em>Aliens Ate My Babysitter</em>)
+        are commercial — buy them on <a href="https://www.gog.com/game/commander_keen_complete_pack" target="_blank" rel="noopener">GOG</a>
         or <a href="https://store.steampowered.com/app/9180/Commander_Keen_Pack/" target="_blank" rel="noopener">Steam</a>,
-        then drop the data files here. Nothing is uploaded — everything runs in your browser.
-      </p>
-
+        then drop the data files here (you can also load your own full Keen 4). Nothing is uploaded — it's assembled and runs in your browser.</p>
       <div id="dropzone" class="dropzone" tabindex="0">
         <div class="dz-inner">
           <div class="dz-icon">📁</div>
-          <p><strong>Drop game files here</strong> or click to choose</p>
-          <p class="dz-hint">Select the episode's <code>*.EXE</code> + <code>AUDIO.CK?</code>, <code>EGAGRAPH.CK?</code>, <code>GAMEMAPS.CK?</code> (you can also use your own full Keen 4 files).</p>
+          <p><strong>Drop the game files here</strong> or click to choose</p>
+          <p class="dz-hint">Select the episode's <code>*.EXE</code> + <code>AUDIO.CK?</code>,
+            <code>EGAGRAPH.CK?</code>, <code>GAMEMAPS.CK?</code>.</p>
         </div>
         <input id="file-input" type="file" multiple accept=".exe,.ck4,.ck5,.ck6,.CK4,.CK5,.CK6,.EXE" hidden>
       </div>
-
       <div id="file-status" class="file-status" hidden></div>
       <button id="play-byo" class="play-btn" disabled>▶ Play</button>
+    </div>
+  </div>
 
-      <!-- Restore a previously downloaded save bundle (.jsdos) -->
-      <div class="save-actions">
-        <button id="save-upload" class="save-btn">⤒ Upload a saved game (.jsdos)</button>
-        <input id="save-file-input" type="file" accept=".jsdos,.zip,application/octet-stream" hidden>
+  <!-- Sync conflict: keep cloud vs keep local (shown only when BOTH sides have a
+       save). The choice is applied across ALL episodes (aggregate): keep cloud
+       pulls every server episode; keep this browser pushes every local one. -->
+  <div class="overlay" id="conflict-modal" hidden>
+    <div class="modal-box wide">
+      <h3>Saved games found on both sides</h3>
+      <p class="muted-note">This browser and key <code id="conflict-key">—</code> each have saved games.
+        Keep one set — the other side's copies are replaced for every episode.</p>
+      <div class="conflict-tiles">
+        <button class="tile" id="tile-cloud" data-choice="cloud">
+          <span class="tile-badge"></span>
+          <span class="tile-ic">☁</span>
+          <span class="tile-title">Cloud saves</span>
+          <span class="tile-size" id="tile-cloud-size">—</span>
+          <span class="tile-desc">From the server. Downloads &amp; replaces this browser's saves.</span>
+        </button>
+        <button class="tile" id="tile-local" data-choice="local">
+          <span class="tile-badge"></span>
+          <span class="tile-ic">💾</span>
+          <span class="tile-title">This browser</span>
+          <span class="tile-size" id="tile-local-size">—</span>
+          <span class="tile-desc">Your local saves. Uploads &amp; replaces the cloud copies.</span>
+        </button>
       </div>
-    </section>
+      <div class="modal-foot">
+        <button class="btn-ghost" id="conflict-cancel">Cancel</button>
+        <button class="play-btn inline" id="conflict-confirm">Keep cloud saves</button>
+      </div>
+    </div>
+  </div>
 
-    <section class="card settings-card">
-      <h2>⚙ Settings</h2>
-      <p>Applied when you start a game. Saves persist automatically in your browser.</p>
-      <label class="setting">Aspect ratio
-        <select id="set-aspect">
-          <option value="4/3">4:3 — classic CRT (default)</option>
-          <option value="AsIs">As-is — sharp 16:10</option>
-          <option value="5/4">5:4</option>
-          <option value="16/10">16:10</option>
-          <option value="16/9">16:9 — widescreen (stretched)</option>
-          <option value="1/1">1:1 — square pixels</option>
-          <option value="Fit">Fit window — fill the screen</option>
-        </select>
-      </label>
-      <label class="setting">Pixels
-        <select id="set-rendering">
-          <option value="pixelated">Crisp — pixel-perfect (default)</option>
-          <option value="smooth">Smooth — blurred</option>
-        </select>
-      </label>
-      <label class="setting">Touch controls
-        <select id="set-touch">
-          <option value="auto">Auto — on for touch devices (default)</option>
-          <option value="on">Always on</option>
-          <option value="off">Off</option>
-        </select>
-      </label>
-      <label class="setting">Engine
-        <select id="set-engine">
-          <option value="dosbox">DOSBox — default, lighter</option>
-          <option value="dosboxX">DOSBox-X — real-time Save/Load states</option>
-        </select>
-      </label>
-      <label class="setting">Screen filter
-        <select id="set-filter">
-          <option value="off">Off — crisp pixels (default)</option>
-          <option value="scanlines">Scanlines</option>
-          <option value="crt">CRT — scanlines + mask + vignette</option>
-          <option value="curved">CRT curved — tube corners</option>
-          <option value="rgb">RGB — aperture mask</option>
-          <option value="soft">Soft — blurry pixels</option>
-          <option value="amber">Amber — monochrome CRT</option>
-          <option value="green">Green — phosphor CRT</option>
-        </select>
-      </label>
-      <label class="setting">Pogo auto-retract
-        <select id="set-pogohold">
-          <option value="off">Off — pogo stays out (tap pogo again yourself)</option>
-          <option value="130">130 ms</option>
-          <option value="180">180 ms (default)</option>
-          <option value="250">250 ms</option>
-        </select>
-      </label>
-      <label class="setting checkbox">
-        <span>Also apply to desktop controls <small>(hold &amp; release the Alt key)</small></span>
-        <input type="checkbox" id="set-pogodesktop">
-      </label>
-    </section>
-  </main>
+  <!-- Play guard: shown when this device and the server disagree for the episode
+       being launched, so a stale or diverged save is never played (and silently
+       overwritten) without a choice. -->
+  <div class="overlay" id="sync-play-modal" hidden>
+    <div class="modal-box">
+      <h3>Which save do you want to play?</h3>
+      <p class="muted-note" id="sync-play-text"></p>
+      <div class="modal-stack">
+        <button id="sync-play-cloud" class="play-btn">⤓ Play the cloud save</button>
+        <button id="sync-play-local" class="play-btn">▶ Play this device's save</button>
+        <button id="sync-play-cancel" class="btn-ghost">Cancel — don't play</button>
+      </div>
+    </div>
+  </div>
 
-  <!-- The js-dos player mounts here when a game launches -->
+  <!-- ===================== GAME STAGE (unchanged) ===================== -->
   <div id="game-stage" class="game-stage" hidden>
     <div id="dos" class="dos-window"></div>
 
@@ -216,19 +382,9 @@
            tabindex="-1" aria-hidden="true">
   </div>
 
-  <footer id="footer">
-    <p>
-      Powered by <a href="https://js-dos.com" target="_blank" rel="noopener">js-dos</a> (DOSBox → WebAssembly).
-      Runs 100% in your browser. <a href="https://github.com/awkto/keen456" target="_blank" rel="noopener">Source on GitHub</a>.
-    </p>
-    <p class="legal">
-      Commander Keen © id Software. Keen 4 shareware is freely redistributable; Keen 5/6 data are not bundled — supply your own.
-    </p>
-  </footer>
-
   <!-- Sets window.KEEN_SYNC_BASE before app.js. Empty on web (same-origin sync);
        the APK ships a copy pointing at a real server. Must load before app.js. -->
   <script src="js/sync-config.js?v=1"></script>
-  <script src="js/app.js?v=39"></script>
+  <script src="js/app.js?v=40"></script>
 </body>
 </html>

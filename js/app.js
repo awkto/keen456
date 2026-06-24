@@ -1,12 +1,14 @@
 /*
- * Commander Keen 4/5/6 launcher (js-dos baseline).
+ * Commander Keen 4/5/6 launcher (js-dos baseline) — "Console" UI + sync v2.
  *
  * - Keen 4 shareware ships as a prebuilt bundle (games/keen4.jsdos).
  * - Keen 5/6 (and full Keen 4): the user supplies their own data files, which we
  *   assemble into a .jsdos bundle entirely in the browser (nothing is uploaded).
  *
- * Wrapped in an IIFE: js-dos.js declares globals (including `var $`), so we must
- * keep our own top-level names ($ , launch, DOSBOX_CONF, …) out of global scope.
+ * Saves are PER EPISODE (keen4/keen5/keen6), in IndexedDB; server sync keeps one
+ * slot per episode. The launcher is a tabbed console (Play / Saves / Sync / How
+ * to / Settings). Wrapped in an IIFE: js-dos.js declares globals (incl. `var $`),
+ * so we keep our own top-level names out of global scope.
  */
 
 (function () {
@@ -76,6 +78,15 @@ let saveTimer = null;       // periodic autosave interval
 
 const $ = (id) => document.getElementById(id);
 
+const VALID_EPISODES = [4, 5, 6];
+const EPISODE_TITLES = {
+  4: "Secret of the Oracle",
+  5: "The Armageddon Machine",
+  6: "Aliens Ate My Babysitter",
+};
+const epOfKey = (k) => (String(k).match(/^keen([1-9])$/) || [])[1];
+const keyOfEp = (ep) => "keen" + ep;
+
 // ---- persistent saves (self-managed) ---------------------------------------
 // js-dos autoSave is unreliable here, so we snapshot the emulator filesystem
 // (ci.persist(false) → a standalone .jsdos bundle holding the game's saves +
@@ -127,18 +138,28 @@ async function saveListKeys() {
 }
 
 let capturing = false;
-// Snapshot the running emulator's filesystem into our IndexedDB under `key`.
+// Per-episode change-detector baselines: lastFsSig[key] is the filesystem
+// signature of the last snapshot we wrote/booted, so captureSave only bumps
+// `modified` (and uploads) when the game actually wrote something new.
+const lastFsSig = {};
+
+// Snapshot the running emulator's filesystem into IndexedDB under `key`. Returns
+// {changed}: true only when the game actually wrote something since the last
+// snapshot, so callers can upload on real changes only.
 async function captureSave(key) {
-  if (!gameCi || typeof gameCi.persist !== "function" || capturing || !key) return;
+  if (!gameCi || typeof gameCi.persist !== "function" || capturing || !key) return { changed: false };
   capturing = true;
   try {
-    const u = await gameCi.persist(false);   // full standalone .jsdos bundle
-    if (u && u.length) {
-      await savePut(key, new Blob([u], { type: "application/octet-stream" }));
-      setLocalModified(key, Date.now());
-      pushSave(key);   // mirror to the server when sync is on (no-op otherwise)
-    }
-  } catch (e) { console.warn("captureSave failed for", key, e); } finally { capturing = false; }
+    const u = await gameCi.persist(false);   // full standalone .jsdos bundle (cumulative-safe)
+    if (!u || !u.length) return { changed: false };
+    const sig = fsSignature(u);
+    if (sig === lastFsSig[key]) return { changed: false };   // nothing new written to disk
+    await savePut(key, new Blob([u], { type: "application/octet-stream" }));
+    setLocalModified(key, Date.now());
+    lastFsSig[key] = sig;
+    return { changed: true };
+  } catch (e) { console.warn("captureSave failed for", key, e); return { changed: false }; }
+  finally { capturing = false; }
 }
 
 // ---- settings (persisted in localStorage) ----------------------------------
@@ -160,8 +181,6 @@ function touchEnabled() {
 // (stable per episode, even when BYO bundles get fresh blob: URLs each time).
 async function launch(url, key) {
   $("launcher").hidden = true;
-  $("topbar").hidden = true;
-  $("footer").hidden = true;
   $("game-stage").hidden = false;
   currentKey = key;
 
@@ -182,11 +201,16 @@ async function launch(url, key) {
   }
 
   // Boot from our saved snapshot for this episode if we have one (restores
-  // progress); otherwise boot the supplied bundle.
+  // progress); otherwise boot the supplied bundle. Baseline the change-detector
+  // to the booted state so the first capture isn't a false "changed".
   let bootUrl = url;
   const saved = await saveGet(key);
-  if (saved) { savedBlobUrl = URL.createObjectURL(saved); bootUrl = savedBlobUrl; }
+  if (saved) {
+    savedBlobUrl = URL.createObjectURL(saved); bootUrl = savedBlobUrl;
+    try { lastFsSig[key] = fsSignature(new Uint8Array(await saved.arrayBuffer())); } catch (_) { delete lastFsSig[key]; }
+  } else { delete lastFsSig[key]; }
 
+  $("dos").innerHTML = "";   // clear any residue from a previous session
   // Dos() boots DOSBox-WASM into #dos and loads the .jsdos bundle.
   dosCi = Dos($("dos"), {
     url: bootUrl,
@@ -218,30 +242,38 @@ async function launch(url, key) {
   startCrtSync();
   renderCrt();
 
-  // Safety-net autosave while playing (covers the game's in-menu saves).
-  clearInterval(saveTimer);
-  saveTimer = setInterval(() => captureSave(key), 30000);
   // First snapshot a few seconds in, so even a very short BYO session persists
-  // the uploaded game data (the 30s timer / quit handlers might not fire in time,
+  // the uploaded game data (the timer / quit handlers might not fire in time,
   // e.g. swiping the Android app away doesn't always emit visibilitychange).
   setTimeout(() => captureSave(key), 5000);
+  // Light background net (60s): persist + upload ONLY when the game actually
+  // wrote a save — covers the game's own in-menu saves without churning the
+  // cloud or hitching gameplay. Realtime quicksaves and exit push immediately.
+  clearInterval(saveTimer);
+  saveTimer = setInterval(async () => {
+    const r = await captureSave(key);
+    if (r.changed) pushSave(key);
+  }, 60000);
 
   // Give the running game its own URL (#keen<ep>) so the browser Back button /
   // system back gesture quits it — this replaces the old on-screen Quit button.
   if (location.hash !== "#" + key) history.pushState({ playing: key }, "", "#" + key);
 }
 
-// Back leaves the game's #hash and fires popstate — snapshot progress, then
-// reload to tear the emulator down cleanly and return to the launcher.
+// Back leaves the game's #hash and fires popstate — snapshot progress, push it,
+// then reload to tear the emulator down cleanly and return to the launcher.
 window.addEventListener("popstate", async () => {
   if (!dosCi) return;
-  clearInterval(saveTimer);
-  await captureSave(currentKey);
+  clearInterval(saveTimer); saveTimer = null;
+  const cap = await captureSave(currentKey);
+  if (cap.changed || localModified(currentKey) > lastSynced(currentKey)) await pushSave(currentKey);
   location.reload();
 });
 // Extra safety: snapshot when the tab is hidden/backgrounded (covers closing it).
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden" && dosCi) captureSave(currentKey);
+  if (document.visibilityState === "hidden" && dosCi) {
+    captureSave(currentKey).then((r) => { if (r.changed || localModified(currentKey) > lastSynced(currentKey)) pushSave(currentKey); });
+  }
 });
 
 // Deep-link: opening the page at #keen<ep> auto-launches that game (server games
@@ -330,7 +362,8 @@ function playByo() {
   // even if the in-game snapshot never gets a chance to capture — e.g. on Android
   // the WebView can be frozen/killed before the autosave or quit handler runs.
   // Later captureSave() calls overwrite this with a full snapshot incl. saves.
-  if (pendingKey) savePut(pendingKey, blob);
+  if (pendingKey) { savePut(pendingKey, blob); setLocalModified(pendingKey, Date.now()); pushSave(pendingKey); }
+  if ($("byo-modal")) $("byo-modal").hidden = true;
   launch(pendingBlobUrl, pendingKey);
 }
 
@@ -551,7 +584,9 @@ function setupSaveLoad() {
     btn.addEventListener("contextmenu", (e) => e.preventDefault());
     btn.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
   };
-  act(save, () => { backendTrigger("hand_savestate"); setTimeout(() => captureSave(currentKey), 700); });
+  // Quicksave: trigger the state, then capture + push immediately (don't wait for
+  // the 60s net) so closing right after a quicksave still reaches the cloud.
+  act(save, () => { backendTrigger("hand_savestate"); setTimeout(async () => { await captureSave(currentKey); await pushSave(currentKey); }, 700); });
   act(load, () => backendTrigger("hand_loadstate"));
 
   // Tap outside the popup/trigger to dismiss.
@@ -789,45 +824,7 @@ function setupTouchControls() {
   window.addEventListener("blur", releaseAll);
 }
 
-// ---- launcher: saved-game download / upload / delete -----------------------
-
-const VALID_EPISODES = [4, 5, 6];
-const epOfKey = (k) => (String(k).match(/^keen([1-9])$/) || [])[1];
-
-async function refreshSavesUI() {
-  const list = $("saves-list");
-  if (!list) return;
-  const card = $("saves-card");
-  const keys = (await saveListKeys()).filter((k) => /^keen[1-9]$/.test(k)).sort();
-  if (!keys.length) {
-    // Nothing saved yet: hide the whole card so the launcher leads with the demo /
-    // import options. It reappears at the top once a game is played or imported.
-    if (card) card.hidden = true;
-    list.innerHTML = "";
-    return;
-  }
-  if (card) card.hidden = false;
-  // Persisted episodes (played or uploaded) are surfaced as prominent "Play" game
-  // buttons — the same presentation as detected server games — so an uploaded game
-  // is a first-class, click-to-play option that survives reloads (no re-upload).
-  const rows = await Promise.all(keys.map(async (k) => {
-    const ep = epOfKey(k);
-    const title = EPISODE_TITLES[ep] || "";
-    const b = await saveGet(k);
-    const kb = b ? Math.round(b.size / 1024) : 0;
-    return `<div class="save-row game">` +
-      `<button class="play-btn" data-play="${k}">▶ Play Keen ${ep}${title ? " — " + title : ""}</button>` +
-      `<div class="save-meta"><small>Saved in this browser · ${kb}&nbsp;KB</small>` +
-      `<span class="save-row-btns">` +
-      `<button class="save-btn" data-dl="${k}">⤓ Download</button>` +
-      `<button class="save-btn danger" data-del="${k}" aria-label="Delete">🗑</button>` +
-      `</span></div></div>`;
-  }));
-  list.innerHTML = rows.join("");
-  list.querySelectorAll("[data-play]").forEach((b) => b.addEventListener("click", () => playSave(b.getAttribute("data-play"))));
-  list.querySelectorAll("[data-dl]").forEach((b) => b.addEventListener("click", () => downloadSave(b.getAttribute("data-dl"))));
-  list.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => deleteSaveUI(b.getAttribute("data-del"))));
-}
+// ---- launcher: per-episode Play tab + Saves tab ----------------------------
 
 // Resume a stored game straight from its IndexedDB snapshot — no re-upload of the
 // data files needed (the snapshot is a full standalone bundle: game data + saves).
@@ -836,6 +833,67 @@ async function playSave(key) {
   const blob = await saveGet(key);
   if (!blob) return;
   launch(URL.createObjectURL(blob), key);
+}
+
+// Have a (local OR launchable) game for this episode?
+async function hasPlayable(ep) {
+  const key = keyOfEp(ep);
+  if (launchable[key]) return true;
+  const b = await saveGet(key);
+  return !!(b && b.size);
+}
+
+// Build the per-episode entry points on the Play tab. Keen 4 is always playable
+// (bundled demo); Keen 5/6 show a Play button when a save/bundle exists, else a
+// "Load files" affordance that opens the BYO modal.
+async function refreshPlayUI() {
+  if (serverManifestActive) return;   // server games replace the episode cards
+  for (const ep of VALID_EPISODES) {
+    const slot = $("ep-action-" + ep);
+    if (!slot) continue;
+    const key = keyOfEp(ep);
+    const playable = await hasPlayable(ep);
+    if (playable) {
+      slot.innerHTML = `<button class="play-btn" data-play-ep="${ep}">▶ Play Keen ${ep}</button>`;
+      slot.querySelector("[data-play-ep]").addEventListener("click", () => onPlayEpisode(ep));
+    } else {
+      // Keen 4 is always launchable (demo) so this branch is for 5/6 with no data.
+      slot.innerHTML = `<button class="btn-dashed" data-load-ep="${ep}">＋ Load Keen ${ep} files</button>` +
+        `<p class="ep-note">Bring your own ${EPISODE_TITLES[ep] ? "" : ""}<code>*.EXE</code> + <code>*.CK${ep}</code> data files.</p>`;
+      slot.querySelector("[data-load-ep]").addEventListener("click", (e) => { e.preventDefault(); openByo(); });
+    }
+  }
+}
+
+async function refreshSavesUI() {
+  const list = $("saves-list");
+  const empty = $("saves-empty");
+  if (!list) return;
+  const keys = (await saveListKeys()).filter((k) => /^keen[456]$/.test(k)).sort();
+  if (!keys.length) {
+    list.innerHTML = "";
+    if (empty) empty.hidden = false;
+    return;
+  }
+  if (empty) empty.hidden = false;   // keep the explainer; rows render above it
+  const rows = await Promise.all(keys.map(async (k) => {
+    const ep = epOfKey(k);
+    const title = EPISODE_TITLES[ep] || "";
+    const b = await saveGet(k);
+    const kb = b ? Math.round(b.size / 1024) : 0;
+    return `<div class="save-row" data-row="${k}">` +
+      `<div class="save-row-top"><span class="save-row-title">Keen ${ep}${title ? " — " + title : ""}</span>` +
+      `<span class="save-row-size">${kb} KB</span></div>` +
+      `<div class="save-row-actions">` +
+      `<button class="btn-2" data-dl="${k}">Download</button>` +
+      `<button class="btn-2" data-play="${k}">Play</button>` +
+      `<button class="btn-danger" data-del="${k}">Delete</button>` +
+      `</div></div>`;
+  }));
+  list.innerHTML = rows.join("");
+  list.querySelectorAll("[data-play]").forEach((b) => b.addEventListener("click", () => playSave(b.getAttribute("data-play"))));
+  list.querySelectorAll("[data-dl]").forEach((b) => b.addEventListener("click", () => downloadSave(b.getAttribute("data-dl"))));
+  list.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => deleteSaveUI(b.getAttribute("data-del"))));
 }
 
 async function downloadSave(key) {
@@ -881,179 +939,23 @@ async function nativeSaveFile(blob, name) {
   } catch (e) { console.warn("native save failed:", e); return false; }
 }
 
+// Delete = clear local + stop sync (keep cloud). For a single episode here we
+// clear that episode locally; the cloud copy is intentionally kept (use "Stop
+// syncing" to keep everything; "Delete" here only removes this browser's copy).
 async function deleteSaveUI(key) {
-  const alsoServer = serverMode && syncEnabled();
-  const msg = alsoServer
-    ? `Delete the saved game for Keen ${epOfKey(key)} — both in this browser and the copy on this server? This cannot be undone.`
-    : `Delete the saved game for Keen ${epOfKey(key)} in this browser? This cannot be undone.`;
+  const synced = serverMode && syncEnabled();
+  const ep = epOfKey(key);
+  const id = getSyncId();
+  const msg = synced
+    ? `Delete the saved game for Keen ${ep} in this browser?\n\nThe cloud copy (key ${id}) is KEPT on the server — write that key down if you might want it back.`
+    : `Delete the saved game for Keen ${ep} in this browser? This cannot be undone.`;
   if (!confirm(msg)) return;
   await saveDelete(key);
   localStorage.removeItem("keen.save.modified." + key);
-  if (alsoServer) {
-    try { await fetch(apiUrl("saves/" + key), { method: "DELETE", headers: { "X-Client-Id": getSyncId() } }); } catch (_) {}
-  }
+  localStorage.removeItem("keen.save.synced." + key);
+  delete lastFsSig[key];
   await refreshSavesUI();
-  refreshCloudUI();
-}
-
-// ---- server-side save sync (container deployments) -------------------------
-// Optional: when the site is served by the container (not a static host such as
-// GitHub Pages), a tiny API (docker/saves-api.py) keeps the save bundles on the
-// server, scoped by a user-held "sync key". Saves then outlive this browser and
-// can be shared across devices that use the same key. Presence is detected by
-// probing /api/health; the whole feature stays hidden when that 404s. Each
-// episode (keen4/5/6) is its own server slot, named by the IndexedDB save key.
-let serverMode = false;
-const SYNC_SLOTS = ["keen4", "keen5", "keen6"];
-// Sync target. Same-origin by default (web container). A build can point it at a
-// remote server by setting window.KEEN_SYNC_BASE (the APK does this via
-// js/sync-config.js, so the packaged app can still reach a real server).
-const SYNC_RAW = (window.KEEN_SYNC_BASE || "").trim();
-const SYNC_BASE = SYNC_RAW ? SYNC_RAW.replace(/\/+$/, "") + "/" : "";
-const apiUrl = (p) => new URL("api/" + p, SYNC_BASE || document.baseURI).href;
-
-// A long, human-copyable key (16 chars, dash-grouped) that scopes this browser's
-// saves on the server. Copy it to another device — or paste one in here — to
-// share the same server-side saves.
-function makeSyncId() {
-  const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";  // no I/O/0/1 — avoid confusion
-  const r = new Uint8Array(16);
-  (window.crypto || crypto).getRandomValues(r);
-  let s = "";
-  for (let i = 0; i < 16; i++) { s += A[r[i] % A.length]; if (i % 4 === 3 && i < 15) s += "-"; }
-  return s;   // e.g. ABCD-EFGH-JKLM-NPQR
-}
-function getSyncId() {
-  let id = localStorage.getItem("keen.syncId");
-  if (!id) { id = makeSyncId(); localStorage.setItem("keen.syncId", id); }
-  return id;
-}
-function normalizeSyncId(v) {
-  const clean = (v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  if (clean.length < 8 || clean.length > 32) return null;
-  return clean.replace(/(.{4})(?=.)/g, "$1-");
-}
-function setSyncId(v) {
-  const id = normalizeSyncId(v);
-  if (id) localStorage.setItem("keen.syncId", id);
-  return id;
-}
-
-// Opt-in: sync is OFF until the user enables it, so installing/launching never
-// auto-touches an existing save (the first enable only ever pushes up).
-const syncEnabled = () => localStorage.getItem("keen.sync") === "on";
-// Each save's modify time is a client-clock epoch-ms stamp (per episode key),
-// compared only against other client-clock stamps (the server stores ours verbatim).
-const localModified = (key) => parseInt(localStorage.getItem("keen.save.modified." + key) || "0", 10) || 0;
-const setLocalModified = (key, ms) => localStorage.setItem("keen.save.modified." + key, String(ms || Date.now()));
-
-async function detectServerMode() {
-  try { const r = await fetch(apiUrl("health"), { cache: "no-store" }); serverMode = r.ok; }
-  catch (_) { serverMode = false; }
-  return serverMode;
-}
-
-// Push one episode's local save up to the server (when sync is on).
-async function pushSave(key) {
-  if (!serverMode || !syncEnabled() || !key) return;
-  const blob = await saveGet(key);
-  if (!blob || !blob.size) return;
-  try {
-    await fetch(apiUrl("saves/" + key), {
-      method: "PUT",
-      headers: { "X-Client-Id": getSyncId(), "X-Save-Modified": String(localModified(key) || Date.now()) },
-      body: blob,
-    });
-  } catch (_) {}
-}
-
-// Reconcile local <-> server across every episode, newer wins: pull a newer
-// server save into this browser, or push the local one up if it's newer (or the
-// server has none).
-async function reconcileSave() {
-  if (!serverMode || !syncEnabled()) return;
-  let remote = [];
-  try {
-    const r = await fetch(apiUrl("saves"), { headers: { "X-Client-Id": getSyncId() }, cache: "no-store" });
-    if (r.ok) remote = await r.json();
-    else return;
-  } catch (_) { return; }
-  const bySlot = {};
-  for (const s of remote) bySlot[s.slot] = s;
-  // Union of episodes that exist locally or on the server.
-  const localKeys = (await saveListKeys()).filter((k) => SYNC_SLOTS.includes(k));
-  const keys = Array.from(new Set([...localKeys, ...SYNC_SLOTS.filter((s) => bySlot[s])]));
-  for (const key of keys) {
-    const rem = bySlot[key] || null;
-    const local = localModified(key);
-    if (rem && rem.modified > local) {
-      try {
-        const r = await fetch(apiUrl("saves/" + key), { headers: { "X-Client-Id": getSyncId() }, cache: "no-store" });
-        if (r.ok) {
-          const buf = new Uint8Array(await r.arrayBuffer());
-          if (buf.length) { await savePut(key, new Blob([buf], { type: "application/octet-stream" })); setLocalModified(key, rem.modified); }
-        }
-      } catch (_) {}
-    } else if (local && (!rem || local > rem.modified)) {
-      await pushSave(key);
-    }
-  }
-}
-
-function flashBtn(btn, text) {
-  if (!btn) return;
-  const orig = btn.textContent; btn.textContent = text;
-  setTimeout(() => { btn.textContent = orig; }, 1200);
-}
-
-// Show the server-copy status + dim the key controls when sync is off.
-async function refreshCloudUI() {
-  if (!serverMode) return;
-  const on = syncEnabled();
-  document.querySelectorAll("#cloud-card .sync-dependent").forEach((el) => el.classList.toggle("dim", !on));
-  const status = $("cloud-status");
-  if (!status) return;
-  if (!on) { status.textContent = "Server sync is off — saves stay in this browser only."; return; }
-  try {
-    const r = await fetch(apiUrl("saves"), { headers: { "X-Client-Id": getSyncId() }, cache: "no-store" });
-    if (!r.ok) { status.textContent = ""; return; }
-    const slots = (await r.json()).filter((s) => SYNC_SLOTS.includes(s.slot));
-    if (!slots.length) { status.textContent = "No server copy yet — it uploads after you play."; return; }
-    const total = slots.reduce((n, s) => n + (s.size || 0), 0);
-    const eps = slots.map((s) => "Keen " + (epOfKey(s.slot) || s.slot)).join(", ");
-    status.textContent = `Backed up to this server — ${eps} (${Math.round(total / 1024)} KB).`;
-  } catch (_) { status.textContent = ""; }
-}
-
-// Build the launcher's "Server sync" card — only when a server is present.
-function setupCloudSync() {
-  const card = $("cloud-card");
-  if (!card || !serverMode) return;     // stays hidden on static hosts (Pages)
-  card.hidden = false;
-  $("sync-id").textContent = getSyncId();
-
-  const toggle = $("set-sync");
-  if (toggle) {
-    toggle.checked = syncEnabled();
-    toggle.addEventListener("change", () => {
-      localStorage.setItem("keen.sync", toggle.checked ? "on" : "off");
-      refreshCloudUI();
-      if (toggle.checked) reconcileSave().then(refreshSavesUI).then(refreshCloudUI);
-    });
-  }
-  const copy = $("sync-copy");
-  if (copy) copy.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(getSyncId()); flashBtn(copy, "Copied!"); } catch (_) {}
-  });
-  const apply = $("sync-apply"), input = $("sync-id-input");
-  if (apply && input) apply.addEventListener("click", async () => {
-    const id = setSyncId(input.value);
-    if (!id) { alert("Enter a sync key like ABCD-EFGH-JKLM-NPQR."); return; }
-    $("sync-id").textContent = id; input.value = "";
-    SYNC_SLOTS.forEach((k) => setLocalModified(k, 0));   // adopt this key's server saves (pull them down)
-    await reconcileSave(); await refreshSavesUI(); refreshCloudUI();
-    alert("Linked — this browser now shares saves with key " + id + ".");
-  });
+  await refreshPlayUI();
   refreshCloudUI();
 }
 
@@ -1075,11 +977,462 @@ async function importSave(file) {
     alert("Couldn't tell which episode this save is for — expected a Keen " + VALID_EPISODES.join("/") + " save.");
     return;
   }
-  await savePut("keen" + ep, new Blob([buf], { type: "application/octet-stream" }));
-  setLocalModified("keen" + ep, Date.now());
-  await refreshSavesUI();
-  pushSave("keen" + ep); refreshCloudUI();
+  const key = keyOfEp(ep);
+  await savePut(key, new Blob([buf], { type: "application/octet-stream" }));
+  setLocalModified(key, Date.now());
+  delete lastFsSig[key];
+  await refreshSavesUI(); await refreshPlayUI();
+  pushSave(key); refreshCloudUI();
   alert("Save imported for Keen " + ep + ". It loads next time you play that episode.");
+}
+
+// ---- server-side save sync (container deployments) — v2 (3-way per episode) -
+// Optional: when the site is served by the container (not a static host such as
+// GitHub Pages), a tiny API (docker/saves-api.py) keeps the save bundles on the
+// server, scoped by a user-held "sync key". Saves then outlive this browser and
+// can be shared across devices that use the same key. Presence is detected by
+// probing /api/health; the whole feature stays hidden when that 404s. Each
+// episode (keen4/5/6) is its own server slot, named by the IndexedDB save key.
+let serverMode = false;
+let serverManifestActive = false;   // a kiosk/server manifest replaced the episode cards
+const SYNC_SLOTS = ["keen4", "keen5", "keen6"];
+// Sync target. Same-origin by default (web container). A build can point it at a
+// remote server by setting window.KEEN_SYNC_BASE (the APK does this via
+// js/sync-config.js, so the packaged app can still reach a real server).
+const SYNC_RAW = (window.KEEN_SYNC_BASE || "").trim();
+const SYNC_BASE = SYNC_RAW ? SYNC_RAW.replace(/\/+$/, "") + "/" : "";
+const apiUrl = (p) => new URL("api/" + p, SYNC_BASE || document.baseURI).href;
+
+// A short, easy-to-type key (4 chars) that scopes this browser's saves on the
+// server. Copy it to another device — or type one in here — to share the same
+// saves. (Legacy longer 16-char keys still validate, so older saves stay reachable.)
+function makeSyncId() {
+  const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";  // no I/O/0/1 — avoid confusion
+  const r = new Uint8Array(4);
+  (window.crypto || crypto).getRandomValues(r);
+  let s = "";
+  for (let i = 0; i < 4; i++) s += A[r[i] % A.length];
+  return s;   // e.g. K7QF
+}
+function getSyncId() {
+  let id = localStorage.getItem("keen.syncId");
+  if (!id) { id = makeSyncId(); localStorage.setItem("keen.syncId", id); }
+  return id;
+}
+function normalizeSyncId(v) {
+  const clean = (v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (clean.length < 4 || clean.length > 32) return null;   // also accepts legacy 16-char keys
+  return clean.length > 4 ? clean.replace(/(.{4})(?=.)/g, "$1-") : clean;
+}
+function setSyncId(v) {
+  const id = normalizeSyncId(v);
+  if (id) localStorage.setItem("keen.syncId", id);
+  return id;
+}
+
+// Opt-in: sync is OFF until the user enables it, so installing/launching never
+// auto-touches an existing save.
+const syncEnabled = () => localStorage.getItem("keen.sync") === "on";
+
+// Two client-clock (epoch-ms) stamps per episode give a real 3-way state so we
+// never silently clobber: `modified` bumps whenever the local save changes;
+// `synced` records the value at the last successful push/pull. Versus the
+// server's stamp, per episode:
+//   local dirty  = modified > synced       server ahead = server.modified > synced
+//   both true    = diverged (must ask)     neither      = in sync
+const localModified = (key) => parseInt(localStorage.getItem("keen.save.modified." + key) || "0", 10) || 0;
+const setLocalModified = (key, ms) => localStorage.setItem("keen.save.modified." + key, String(ms || Date.now()));
+const lastSynced = (key) => parseInt(localStorage.getItem("keen.save.synced." + key) || "0", 10) || 0;
+function markSynced(key, ms) {   // local now equals server for this episode: clean
+  localStorage.setItem("keen.save.modified." + key, String(ms));
+  localStorage.setItem("keen.save.synced." + key, String(ms));
+}
+
+// A stable signature of the emulator filesystem CONTENTS (not the zip wrapper,
+// which isn't byte-stable across re-saves). Unzips the persist bundle and samples
+// each file's bytes, so it changes only when the game actually writes a save —
+// letting the background net bump `modified`/upload on real changes only.
+function fsSignature(zipU8) {
+  try {
+    const files = fflate.unzipSync(zipU8);
+    let h = 2166136261 >>> 0;
+    for (const name of Object.keys(files).sort()) {
+      for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 16777619);
+      const b = files[name]; h = Math.imul(h ^ b.length, 16777619);
+      const step = Math.max(1, (b.length / 1024) | 0);
+      for (let i = 0; i < b.length; i += step) h = Math.imul(h ^ b[i], 16777619);
+    }
+    return (h >>> 0).toString(36);
+  } catch (_) { return "z" + zipU8.length; }
+}
+
+async function detectServerMode() {
+  try { const r = await fetch(apiUrl("health"), { cache: "no-store" }); serverMode = r.ok; }
+  catch (_) { serverMode = false; }
+  return serverMode;
+}
+
+const fmtKB = (n) => Math.round(n / 1024) + " KB";
+
+// The server's save-slot meta for the current key: { keen4: {...}, ... }.
+async function fetchRemoteSlots() {
+  try {
+    const r = await fetch(apiUrl("saves"), { headers: { "X-Client-Id": getSyncId() }, cache: "no-store" });
+    if (!r.ok) return {};
+    const out = {};
+    for (const s of await r.json()) if (SYNC_SLOTS.includes(s.slot)) out[s.slot] = s;
+    return out;
+  } catch (_) { return {}; }
+}
+
+// Classify one episode local vs server: empty / local-only / server-only /
+// in-sync / local-dirty / server-new / diverged.
+function classify(key, remote, blob) {
+  const haveLocal = !!(blob && blob.size);
+  const base = lastSynced(key);
+  const localDirty = haveLocal && localModified(key) > base;
+  const serverNew = !!remote && remote.modified > base;
+  if (!remote && !haveLocal) return "empty";
+  if (!remote) return "local-only";
+  if (!haveLocal) return "server-only";
+  if (localDirty && serverNew) return "diverged";
+  if (serverNew) return "server-new";
+  if (localDirty) return "local-dirty";
+  return "in-sync";
+}
+
+// Per-episode state for the episode being launched (used by the Play guard).
+async function syncStateFor(key) {
+  if (!serverMode) return { state: "no-server" };
+  if (!syncEnabled()) return { state: "off" };
+  const slots = await fetchRemoteSlots();
+  const remote = slots[key] || null;
+  const blob = await saveGet(key);
+  return { state: classify(key, remote, blob), remote, haveLocal: !!(blob && blob.size) };
+}
+
+// Aggregate state across all episodes (drives the pill + status line). Severity
+// order: diverged > server-new/server-only > local-dirty/local-only > in-sync.
+async function aggregateState() {
+  if (!serverMode) return { state: "no-server" };
+  if (!syncEnabled()) return { state: "off" };
+  const slots = await fetchRemoteSlots();
+  let anyRemote = false, anyLocal = false, anyDirty = false, anyServerNew = false, anyDiverged = false, totalSize = 0;
+  for (const key of SYNC_SLOTS) {
+    const remote = slots[key] || null;
+    const blob = await saveGet(key);
+    if (remote) { anyRemote = true; totalSize += remote.size || 0; }
+    if (blob && blob.size) anyLocal = true;
+    const st = classify(key, remote, blob);
+    if (st === "diverged") anyDiverged = true;
+    else if (st === "server-new" || st === "server-only") anyServerNew = true;
+    else if (st === "local-dirty" || st === "local-only") anyDirty = true;
+  }
+  let state;
+  if (!anyRemote && !anyLocal) state = "empty";
+  else if (anyDiverged) state = "diverged";
+  else if (anyServerNew) state = "server-new";
+  else if (anyDirty) state = "local-dirty";
+  else state = "in-sync";
+  return { state, totalSize, anyRemote };
+}
+
+// Upload one episode's local save; marks it synced (clean). Returns true on success.
+async function pushSave(key) {
+  if (!serverMode || !syncEnabled() || !key) return false;
+  const blob = await saveGet(key);
+  if (!blob || !blob.size) return false;
+  const modified = localModified(key) || Date.now();
+  try {
+    const r = await fetch(apiUrl("saves/" + key), {
+      method: "PUT",
+      headers: { "X-Client-Id": getSyncId(), "X-Save-Modified": String(modified) },
+      body: blob,
+    });
+    if (r.ok) { markSynced(key, modified); return true; }
+  } catch (_) {}
+  return false;
+}
+
+// Download one episode's server save into this browser; marks it synced. Returns bytes.
+async function pullFromServer(key, modified) {
+  try {
+    const r = await fetch(apiUrl("saves/" + key), { headers: { "X-Client-Id": getSyncId() }, cache: "no-store" });
+    if (!r.ok) return 0;
+    const buf = new Uint8Array(await r.arrayBuffer());
+    if (!buf.length) return 0;
+    await savePut(key, new Blob([buf], { type: "application/octet-stream" }));
+    markSynced(key, modified || Date.now());
+    lastFsSig[key] = fsSignature(buf);   // baseline = the just-pulled content
+    return buf.length;
+  } catch (_) { return 0; }
+}
+
+// On launch, auto-download any newer server saves — but ONLY for episodes where
+// it's safe (this device has no unsynced changes of its own). Divergence is left
+// for the Play prompt so nothing is silently overwritten.
+async function autoSyncOnStart() {
+  if (!serverMode || !syncEnabled()) return;
+  const slots = await fetchRemoteSlots();
+  for (const key of SYNC_SLOTS) {
+    const remote = slots[key] || null;
+    const blob = await saveGet(key);
+    const st = classify(key, remote, blob);
+    if ((st === "server-new" || st === "server-only") && remote) await pullFromServer(key, remote.modified);
+  }
+  await refreshSavesUI(); await refreshPlayUI();
+  refreshCloudUI();
+}
+
+function flashBtn(btn, text) {
+  if (!btn) return;
+  const orig = btn.textContent; btn.textContent = text;
+  setTimeout(() => { btn.textContent = orig; }, 1200);
+}
+
+function setSyncStatus(msg) {
+  const s = $("cloud-status"); if (s) s.textContent = msg;
+  const n = $("play-sync-note"); if (n) n.textContent = (serverMode && syncEnabled()) ? msg : "";
+}
+
+// A short phrase describing the aggregate sync state (card + under Play).
+function syncStateText(st, size) {
+  switch (st) {
+    case "in-sync":     return "✓ In sync with the server.";
+    case "local-dirty": return "⬆ This device has changes not yet uploaded — they upload as you play and on exit.";
+    case "server-new":  return "⬇ The server has newer saves — they download when you start (or on Play).";
+    case "diverged":    return "⚠ This device and the server have both changed — you'll choose which to keep on Play.";
+    case "empty":       return "Sync on — no saves yet; they upload after you play.";
+    default:            return "";
+  }
+}
+
+// The compact top-bar pill mirrors the aggregate sync state at a glance.
+function syncPill(st, size) {
+  const pill = $("sync-pill"), txt = $("sync-pill-text");
+  if (!pill || !txt) return;
+  if (!serverMode || !syncEnabled()) { pill.hidden = true; return; }
+  let warn = false, label = "Synced";
+  switch (st) {
+    case "in-sync":     label = size ? "Synced · " + fmtKB(size) : "Synced"; break;
+    case "server-new":  label = "Cloud is newer"; warn = true; break;
+    case "local-dirty": label = "Unsynced changes"; warn = true; break;
+    case "diverged":    label = "Needs a choice"; warn = true; break;
+    case "empty":       label = "Sync on"; break;
+  }
+  txt.textContent = label;
+  pill.classList.toggle("warn", warn);
+  pill.hidden = false;
+}
+
+// Refresh the launcher status line, the note under Play, and the top-bar pill.
+async function refreshCloudUI() {
+  if (!serverMode) { syncPill("off"); return; }
+  if (!syncEnabled()) { setSyncStatus("Server sync is off — saves stay in this browser only."); syncPill("off"); return; }
+  const s = await aggregateState();
+  setSyncStatus(syncStateText(s.state, s.totalSize));
+  syncPill(s.state, s.totalSize);
+}
+
+// ----- "Link" a key. If BOTH sides have any save, the conflict modal (keep cloud
+// vs keep this browser) opens; the choice is applied across ALL episodes. If only
+// one side has saves, it syncs silently in the obvious direction. -------------
+let pendingLink = null;        // { id, slots } awaiting the conflict choice
+let conflictChoice = "cloud";
+
+function closeConflict() { const m = $("conflict-modal"); if (m) m.hidden = true; pendingLink = null; }
+
+function paintConflict() {
+  const tc = $("tile-cloud"), tl = $("tile-local"), btn = $("conflict-confirm");
+  if (tc) tc.classList.toggle("sel", conflictChoice === "cloud");
+  if (tl) tl.classList.toggle("sel", conflictChoice === "local");
+  if (btn) btn.textContent = conflictChoice === "cloud" ? "Keep cloud saves" : "Keep this browser";
+}
+
+async function linkToKey(rawKey) {
+  const id = setSyncId(rawKey);
+  if (!id) { alert("Enter a sync key (4+ characters, e.g. K7QF)."); return; }
+  $("sync-id").textContent = id;
+  if ($("sync-id-input")) $("sync-id-input").value = "";
+  if ($("link-row")) $("link-row").hidden = true;
+  localStorage.setItem("keen.sync", "on");
+  const t = $("set-sync"); if (t) t.checked = true;
+  // Adopt this key from scratch: reset the per-episode synced baselines so the
+  // server's saves are seen as "server-new/only" (rather than already-synced).
+  SYNC_SLOTS.forEach((k) => localStorage.removeItem("keen.save.synced." + k));
+
+  const slots = await fetchRemoteSlots();
+  let cloudSize = 0; for (const k of SYNC_SLOTS) if (slots[k]) cloudSize += slots[k].size || 0;
+  const anyRemote = Object.keys(slots).length > 0;
+  let localSize = 0, anyLocal = false;
+  for (const k of SYNC_SLOTS) { const b = await saveGet(k); if (b && b.size) { anyLocal = true; localSize += b.size; } }
+
+  if (anyRemote && anyLocal) {
+    // Both sides have saves — ask which set to keep (applied to all episodes).
+    pendingLink = { id, slots };
+    conflictChoice = "cloud";
+    if ($("conflict-key")) $("conflict-key").textContent = id;
+    if ($("tile-cloud-size")) $("tile-cloud-size").textContent = fmtKB(cloudSize);
+    if ($("tile-local-size")) $("tile-local-size").textContent = fmtKB(localSize);
+    paintConflict();
+    $("conflict-modal").hidden = false;
+    return;
+  }
+  // Only one side has saves → sync silently in the obvious direction.
+  if (anyRemote) {
+    for (const k of SYNC_SLOTS) if (slots[k]) await pullFromServer(k, slots[k].modified);
+    await refreshSavesUI(); await refreshPlayUI(); await refreshCloudUI();
+    setSyncStatus(`✓ Linked to ${id} — downloaded the cloud saves (${fmtKB(cloudSize)}). Press ▶ Play.`);
+  } else if (anyLocal) {
+    for (const k of SYNC_SLOTS) { const b = await saveGet(k); if (b && b.size) { setLocalModified(k, Date.now()); await pushSave(k); } }
+    await refreshSavesUI(); await refreshPlayUI(); await refreshCloudUI();
+    setSyncStatus(`✓ Linked to ${id} — uploaded this device's saves.`);
+  } else {
+    await refreshCloudUI();
+    setSyncStatus(`Linked to key ${id}. No saves here or on the server yet — play to create one.`);
+  }
+}
+
+async function confirmConflict() {
+  const link = pendingLink;
+  closeConflict();
+  if (!link) return;
+  if (conflictChoice === "cloud") {
+    // Keep cloud: pull every server episode (replacing any local copy).
+    for (const k of SYNC_SLOTS) if (link.slots[k]) await pullFromServer(k, link.slots[k].modified);
+    await refreshSavesUI(); await refreshPlayUI(); await refreshCloudUI();
+    setSyncStatus("✓ Cloud saves downloaded — press ▶ Play to load them.");
+  } else {
+    // Keep this browser: push every local episode (replacing the cloud copies).
+    for (const k of SYNC_SLOTS) { const b = await saveGet(k); if (b && b.size) { setLocalModified(k, Date.now()); await pushSave(k); } }
+    await refreshSavesUI(); await refreshPlayUI(); await refreshCloudUI();
+    setSyncStatus("✓ Your local saves were uploaded to this key — in sync from now on.");
+  }
+}
+
+// Build the launcher's "Server sync" card. On a static host (no backend) the card
+// stays hidden and a short explainer shows instead.
+function setupCloudSync() {
+  if (!serverMode) { const a = $("cloud-absent-note"); if (a) a.hidden = false; return; }
+  const card = $("cloud-card");
+  if (!card) return;
+  card.hidden = false;
+  $("sync-id").textContent = getSyncId();
+
+  const toggle = $("set-sync");
+  if (toggle) {
+    toggle.checked = syncEnabled();
+    toggle.addEventListener("change", () => {
+      localStorage.setItem("keen.sync", toggle.checked ? "on" : "off");
+      if (toggle.checked) autoSyncOnStart().then(refreshCloudUI);
+      else refreshCloudUI();
+    });
+  }
+  const copy = $("sync-copy");
+  if (copy) copy.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(getSyncId()); flashBtn(copy, "Copied!"); } catch (_) {}
+  });
+  const open = $("sync-link-open"), row = $("link-row");
+  if (open && row) open.addEventListener("click", () => {
+    row.hidden = !row.hidden;
+    if (!row.hidden) { const i = $("sync-id-input"); if (i) i.focus(); }
+  });
+  const apply = $("sync-apply"), input = $("sync-id-input");
+  if (apply && input) {
+    apply.addEventListener("click", () => linkToKey(input.value));
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") linkToKey(input.value); });
+  }
+  // Conflict modal: select a tile, confirm, or cancel / click the backdrop.
+  const tc = $("tile-cloud"), tl = $("tile-local");
+  if (tc) tc.addEventListener("click", () => { conflictChoice = "cloud"; paintConflict(); });
+  if (tl) tl.addEventListener("click", () => { conflictChoice = "local"; paintConflict(); });
+  const cf = $("conflict-confirm"), cx = $("conflict-cancel"), cm = $("conflict-modal");
+  if (cf) cf.addEventListener("click", confirmConflict);
+  if (cx) cx.addEventListener("click", closeConflict);
+  if (cm) cm.addEventListener("click", (e) => { if (e.target === cm) closeConflict(); });
+  const disc = $("sync-disconnect");
+  if (disc) disc.addEventListener("click", disconnectSync);
+  // Play-guard modal buttons + backdrop dismiss.
+  const pc = $("sync-play-cloud"), pl = $("sync-play-local"), px = $("sync-play-cancel"), pm = $("sync-play-modal");
+  if (pc) pc.addEventListener("click", () => playWith("cloud"));
+  if (pl) pl.addEventListener("click", () => playWith("local"));
+  if (px) px.addEventListener("click", hidePlayModal);
+  if (pm) pm.addEventListener("click", (e) => { if (e.target === pm) hidePlayModal(); });
+  // Debug hook (only with ?debug): lets a harness inspect/drive sync state.
+  try {
+    if (/[?&#]debug/.test(location.href)) {
+      window.__ksync = { aggregateState, syncStateFor, getSyncId, setSyncId, localModified, lastSynced,
+        onPlayEpisode, autoSyncOnStart, pushSave, pullFromServer, refreshCloudUI, disconnectSync, linkToKey, SYNC_SLOTS };
+    }
+  } catch (_) {}
+  refreshCloudUI();
+}
+
+// Disconnect this device WITHOUT deleting anything: keep the local saves, keep
+// the cloud copies, just stop syncing and forget the key. (Delete, by contrast,
+// clears a local save.) Lets you preserve both copies as separate branches.
+function disconnectSync() {
+  const id = getSyncId();
+  if (!confirm(`Stop syncing on this device?\n\nYour saved games here are KEPT, and the cloud copies (key ${id}) are also KEPT — write that key down if you might reconnect. This device just disconnects and forgets the key.`)) return;
+  localStorage.setItem("keen.sync", "off");
+  localStorage.removeItem("keen.syncId");
+  SYNC_SLOTS.forEach((k) => localStorage.removeItem("keen.save.synced." + k));   // a future re-link starts fresh comparisons
+  const t = $("set-sync"); if (t) t.checked = false;
+  if ($("sync-id")) $("sync-id").textContent = getSyncId();   // fresh key for next time
+  refreshCloudUI();
+}
+
+// ----- Play guard: never start an episode on a stale/diverged save without asking --
+let pendingPlay = null;   // { key, state }
+
+function hidePlayModal() { const m = $("sync-play-modal"); if (m) m.hidden = true; pendingPlay = null; }
+
+// What happens when an episode's "▶ Play" is pressed.
+async function onPlayEpisode(ep) {
+  const key = keyOfEp(ep);
+  if (serverMode && syncEnabled()) {
+    const s = await syncStateFor(key);
+    if (s.state === "server-only" && s.remote) {
+      await pullFromServer(key, s.remote.modified);   // browser empty, cloud has it — just take it
+      await refreshSavesUI(); await refreshPlayUI();
+    } else if (s.state === "server-new" || s.state === "diverged") {
+      showPlayModal(ep, s);                            // behind/diverged — ask which to play
+      return;
+    }
+  }
+  launchEpisode(ep);
+}
+
+// Launch by episode: the bundled demo / server game if launchable, else the
+// stored snapshot for this episode.
+async function launchEpisode(ep) {
+  const key = keyOfEp(ep);
+  if (launchable[key]) { launch(launchable[key], key); return; }
+  const blob = await saveGet(key);
+  if (blob) { launch(URL.createObjectURL(blob), key); return; }
+  // No data at all (5/6 not yet supplied) — prompt for files.
+  openByo();
+}
+
+function showPlayModal(ep, s) {
+  const m = $("sync-play-modal"), text = $("sync-play-text");
+  if (!m || !text) { launchEpisode(ep); return; }
+  pendingPlay = { key: keyOfEp(ep), state: s, ep };
+  text.textContent = s.state === "diverged"
+    ? `This device and the server have each changed the Keen ${ep} save since they last matched. Pick which to play — the other is overwritten permanently. (Or Cancel and use “Stop syncing” to keep both.)`
+    : `The server has a newer Keen ${ep} save than this device${s.remote ? " (" + fmtKB(s.remote.size) + ")" : ""}. Pick which to play — the other is overwritten permanently. (Or Cancel and use “Stop syncing” to keep both.)`;
+  m.hidden = false;
+}
+
+async function playWith(which) {
+  const p = pendingPlay;
+  hidePlayModal();
+  if (p) {
+    if (which === "cloud" && p.state.remote) await pullFromServer(p.key, p.state.remote.modified);
+    else if (which === "local") { setLocalModified(p.key, Date.now()); await pushSave(p.key); }   // force this device up
+    await refreshSavesUI(); await refreshPlayUI();
+    launchEpisode(p.ep);
+  }
 }
 
 // ---- settings UI -----------------------------------------------------------
@@ -1091,12 +1444,10 @@ function applyPogoHold() {
 }
 
 // Desktop POGO on the physical Alt key — mirrors the on-screen POGO button when
-// the "also apply to desktop controls" checkbox is on. The native Alt already
-// gives the game Pogo (342), so we (a) inject Jump (Ctrl 341) staggered ~30ms
-// after, so Alt does the Pogo+Jump super-bounce like mobile, and (b) on release
-// past the pogohold threshold inject one extra Alt tap to auto-retract the pogo.
-// Observed in the capture phase so js-dos still receives the native Alt; reuses
-// the same pogohold ms. Off => plain native Alt (pogo only), unchanged.
+// the "pogo on desktop Alt" switch is on. The native Alt already gives the game
+// Pogo (342), so we (a) inject Jump (Ctrl 341) staggered ~30ms after, so Alt does
+// the Pogo+Jump super-bounce like mobile, and (b) on release past the pogohold
+// threshold inject one extra Alt tap to auto-retract the pogo.
 const JUMP_KEY = 341;        // GLFW left Ctrl = Jump
 function setupDesktopPogo() {
   const st = {};   // "AltLeft" | "AltRight" -> { t0, jumpTimer, jumpDown }
@@ -1128,18 +1479,31 @@ function setupSettings() {
   // the only escape from a stuck-ON pogo, and human taps rarely beat ~80ms, so
   // those left no reliable escape. 130 is the floor. Migrate dropped values.
   if (["0", "40", "80"].includes(getSetting("pogohold"))) setSetting("pogohold", "180");
-  [["set-aspect", "aspect"], ["set-rendering", "rendering"], ["set-touch", "touch"],
-   ["set-engine", "engine"], ["set-pogohold", "pogohold"], ["set-filter", "filter"]]
-    .forEach(([id, key]) => {
-      const sel = $(id);
-      if (!sel) return;
-      sel.value = getSetting(key);
-      sel.addEventListener("change", () => {
-        setSetting(key, sel.value);
-        if (key === "pogohold") applyPogoHold();
-        if (key === "filter") renderCrt();   // re-draw immediately if a game is running
-      });
+
+  // Segmented controls (buttons) — Engine / Pixels(rendering) / Touch.
+  document.querySelectorAll(".seg[data-setting]").forEach((seg) => {
+    const key = seg.dataset.setting;
+    const paint = () => {
+      const cur = getSetting(key);
+      seg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.value === cur));
+    };
+    seg.querySelectorAll("button").forEach((b) => {
+      b.addEventListener("click", () => { setSetting(key, b.dataset.value); paint(); });
     });
+    paint();
+  });
+  // Native selects — Aspect / Filter / Pogo auto-retract.
+  [["set-aspect", "aspect"], ["set-filter", "filter"], ["set-pogohold", "pogohold"]].forEach(([id, key]) => {
+    const sel = $(id);
+    if (!sel) return;
+    sel.value = getSetting(key);
+    sel.addEventListener("change", () => {
+      setSetting(key, sel.value);
+      if (key === "pogohold") applyPogoHold();
+      if (key === "filter") renderCrt();   // re-draw immediately if a game is running
+    });
+  });
+  // Checkbox — desktop pogo.
   const dp = $("set-pogodesktop");
   if (dp) {
     dp.checked = getSetting("pogodesktop") === "on";
@@ -1148,18 +1512,26 @@ function setupSettings() {
   applyPogoHold();
 }
 
-// ---- server / kiosk mode ---------------------------------------------------
+// Tab routing: desktop top tabs + mobile bottom tabs both set data-tab on .console.
+function setupTabs() {
+  const console_ = $("console");
+  if (!console_) return;
+  const setTab = (tab) => {
+    console_.dataset.tab = tab;
+    document.querySelectorAll(".tab-top, .tab-b").forEach((b) =>
+      b.classList.toggle("active", b.dataset.tab === tab));
+  };
+  document.querySelectorAll(".tab-top, .tab-b").forEach((b) =>
+    b.addEventListener("click", () => setTab(b.dataset.tab)));
+  setTab(console_.dataset.tab || "play");
+}
 
-const EPISODE_TITLES = {
-  4: "Secret of the Oracle",
-  5: "The Armageddon Machine",
-  6: "Aliens Ate My Babysitter",
-};
+// ---- server / kiosk mode ---------------------------------------------------
 
 // When served from the container with a mounted data dir, an entrypoint writes
 // games/manifest.json listing the available episodes. In that case we show only
-// those games and hide the bring-your-own-data UI.
-async function setupServerMode() {
+// those games (replacing the episode cards) and hide the bring-your-own-data UI.
+async function setupServerManifest() {
   let manifest;
   try {
     const res = await fetch("games/manifest.json", { cache: "no-store" });
@@ -1168,9 +1540,8 @@ async function setupServerMode() {
   } catch (_) { return; }
   if (!manifest || !manifest.serverMode || !Array.isArray(manifest.games) || !manifest.games.length) return;
 
-  $("demo-card").hidden = true;
-  $("byo-card").hidden = true;
-
+  serverManifestActive = true;
+  const eps = $("episodes"); if (eps) eps.hidden = true;
   const list = $("server-games-list");
   list.innerHTML = "";
   manifest.games
@@ -1182,11 +1553,15 @@ async function setupServerMode() {
       const title = g.title || EPISODE_TITLES[g.episode] || "";
       btn.textContent = `▶ Play Keen ${g.episode}${title ? " — " + title : ""}`;
       launchable["keen" + g.episode] = g.bundle;   // enable deep-link / back routing
-      btn.addEventListener("click", () => launch(g.bundle, "keen" + g.episode));
+      btn.addEventListener("click", () => onPlayEpisode(g.episode));
       list.appendChild(btn);
     });
   $("server-games").hidden = false;
 }
+
+// ---- BYO modal -------------------------------------------------------------
+
+function openByo() { const m = $("byo-modal"); if (m) m.hidden = false; }
 
 // ---- wiring ----------------------------------------------------------------
 
@@ -1194,33 +1569,67 @@ window.addEventListener("DOMContentLoaded", () => {
   // Ask the browser/Android WebView to keep our IndexedDB (saved games + uploaded
   // BYO game data) durable so it isn't evicted under storage pressure.
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) {}
-  // On Android (Capacitor) the app being backgrounded is the most reliable moment
-  // to snapshot — visibilitychange isn't always delivered before the WebView freezes.
-  try {
-    const App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
-    if (App && App.addListener) App.addListener("pause", () => captureSave(currentKey));
-  } catch (_) {}
+
+  setupTabs();
   setupSettings();
   setupDesktopPogo();
   setupTouchControls();
+
+  // Best-effort capture if the tab is hidden/closed while playing.
+  const bgCapture = () => {
+    if (dosCi) captureSave(currentKey).then((r) => { if (r.changed || localModified(currentKey) > lastSynced(currentKey)) pushSave(currentKey); });
+  };
+  window.addEventListener("pagehide", bgCapture);
+
+  // On Android (Capacitor) the app being backgrounded is the most reliable moment
+  // to snapshot — visibilitychange isn't always delivered before the WebView freezes.
+  // Also: hardware Back in-game returns to the launcher; at the launcher exits.
+  try {
+    const App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+    if (App && App.addListener) {
+      App.addListener("pause", () => bgCapture());
+      App.addListener("backButton", () => {
+        if (dosCi) window.history.back();
+        else App.exitApp();
+      });
+    }
+  } catch (_) {}
+
   launchable["keen4"] = "games/keen4.jsdos";   // bundled demo (overridden by server manifest if present)
-  setupServerMode().then(deepLink);            // deep-link after the manifest (if any) has loaded
+  setupServerManifest().then(() => { refreshPlayUI(); deepLink(); });   // deep-link after the manifest (if any) loaded
 
   refreshSavesUI();
+  refreshPlayUI();
   // Server-side save sync — only when the container backend is present (probe
   // /api/health). On static hosts (GitHub Pages) the card stays hidden.
   detectServerMode().then(() => {
     setupCloudSync();
-    if (serverMode && syncEnabled()) reconcileSave().then(refreshSavesUI).then(refreshCloudUI);
-  });
-  $("save-upload").addEventListener("click", () => $("save-file-input").click());
-  $("save-file-input").addEventListener("change", (e) => {
-    const f = e.target.files[0]; e.target.value = ""; importSave(f);
+    autoSyncOnStart();   // safe newer-server pull on launch (diverged -> asked on Play)
   });
 
-  $("play-keen4").addEventListener("click", () => launch("games/keen4.jsdos", "keen4"));
+  // Saves tab: upload a downloaded save.
+  const saveInput = $("save-file-input");
+  $("save-upload").addEventListener("click", () => saveInput.click());
+  saveInput.addEventListener("change", () => { if (saveInput.files.length) { importSave(saveInput.files[0]); saveInput.value = ""; } });
+
+  // Hero poster + BYO link.
+  const poster = $("hero-poster");
+  if (poster) poster.addEventListener("click", () => onPlayEpisode(4));
+  const byoModal = $("byo-modal");
+  $("show-byo").addEventListener("click", (e) => { e.preventDefault(); openByo(); });
+  const byoClose = $("byo-close");
+  if (byoClose) byoClose.addEventListener("click", () => { byoModal.hidden = true; });
+  if (byoModal) byoModal.addEventListener("click", (e) => { if (e.target === byoModal) byoModal.hidden = true; });
   $("play-byo").addEventListener("click", playByo);
 
+  // Mobile-only "How to play" link (no dedicated bottom tab).
+  const howM = $("show-howto-m");
+  if (howM) howM.addEventListener("click", (e) => { e.preventDefault();
+    const c = $("console"); if (c) { c.dataset.tab = "howto";
+      document.querySelectorAll(".tab-top, .tab-b").forEach((b) => b.classList.toggle("active", b.dataset.tab === "howto")); }
+  });
+
+  // BYO dropzone.
   const dz = $("dropzone");
   const input = $("file-input");
   dz.addEventListener("click", () => input.click());
