@@ -870,12 +870,16 @@ function setupTouchControls() {
 let serverMode = false;
 let serverManifestActive = false;   // a kiosk/server manifest replaced the play surface
 const AUTO_SLOT = "auto";           // one slot per (per-game) key
-// Sync target. Same-origin by default (web container). A build can point it at a
-// remote server by setting window.KEEN_SYNC_BASE (the APK does this via
-// js/sync-config.js, so the packaged app can still reach a real server).
-const SYNC_RAW = (window.KEEN_SYNC_BASE || "").trim();
-const SYNC_BASE = SYNC_RAW ? SYNC_RAW.replace(/\/+$/, "") + "/" : "";
-const apiUrl = (p) => new URL("api/" + p, SYNC_BASE || document.baseURI).href;
+// Sync target, resolved live so it can change at runtime (Settings ▸ Sync server):
+//   in-app override (localStorage) -> baked default (window.KEEN_SYNC_BASE, set by
+//   the APK build via js/sync-config.js) -> same-origin (web container, blank).
+// The APK now ships unconfigured (blank) — the user points it at a server in
+// Settings; until then the sync card is grayed out.
+const SYNC_OVERRIDE_KEY = "keen.syncBase";
+const syncBaseDefault = () => (window.KEEN_SYNC_BASE || "").trim();
+const syncBaseRaw = () => (localStorage.getItem(SYNC_OVERRIDE_KEY) || "").trim() || syncBaseDefault();
+const syncBase = () => { const r = syncBaseRaw(); return r ? r.replace(/\/+$/, "") + "/" : ""; };
+const apiUrl = (p) => new URL("api/" + p, syncBase() || document.baseURI).href;
 
 // A short, easy-to-type key (4 chars) that scopes ONE game's saves on the server.
 // Copy it to another device — or type one in here — to share that game's save.
@@ -1117,10 +1121,21 @@ async function refreshSavedCard() {
 
 async function refreshSyncCard() {
   if (!serverMode) {
-    $("sync-card").hidden = true;
-    $("sync-absent").hidden = false;
+    // No reachable server configured — show the card grayed out with a hint to
+    // set one in Settings, instead of hiding it. (APK ships unconfigured.)
+    $("sync-absent").hidden = true;
+    const card = $("sync-card"); card.hidden = false; card.style.opacity = "0.55";
+    ["sync-toggle", "sync-copy", "sync-link-open", "sync-apply", "sync-key-input", "sync-disconnect"]
+      .forEach((id) => { const el = $(id); if (el) el.disabled = true; });
+    $("sync-on-body").hidden = true;
+    $("sync-off-body").hidden = true;
+    if ($("link-row")) $("link-row").hidden = true;
+    $("sync-status").textContent = "⚙ Configure a sync server first — Settings ▸ Sync server.";
     return;
   }
+  $("sync-card").style.opacity = "";
+  ["sync-toggle", "sync-copy", "sync-link-open", "sync-apply", "sync-key-input", "sync-disconnect"]
+    .forEach((id) => { const el = $(id); if (el) el.disabled = false; });
   $("sync-absent").hidden = true;
   $("sync-card").hidden = false;
   $("sync-badge").textContent = "Keen " + GAME_NUM[game];
@@ -1518,6 +1533,22 @@ function setupSettings() {
     dp.addEventListener("change", () => setSetting("pogodesktop", dp.checked ? "on" : "off"));
   }
   applyPogoHold();
+
+  // Sync server (runtime-configurable). Blank = same-origin (web) / unconfigured
+  // (APK). Saving reloads so server detection + all sync UI rebuild cleanly.
+  const sb = $("set-sync-base");
+  if (sb) {
+    sb.value = localStorage.getItem(SYNC_OVERRIDE_KEY) || "";
+    const nativeApk = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+    sb.placeholder = syncBaseDefault() || (nativeApk ? "https://keen456.box.dnsif.ca/" : "(this site)");
+    sb.addEventListener("change", () => {
+      const v = sb.value.trim();
+      if (v) localStorage.setItem(SYNC_OVERRIDE_KEY, v);
+      else localStorage.removeItem(SYNC_OVERRIDE_KEY);
+      location.reload();
+    });
+    sb.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sb.blur(); } });
+  }
 }
 
 // The screen-filter <select>.

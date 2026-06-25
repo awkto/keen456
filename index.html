@@ -237,6 +237,11 @@
                   <input type="checkbox" id="set-pogodesktop"><span class="switch-knob"></span>
                 </label>
               </div>
+              <div class="set-row"><span class="set-label">Sync server</span>
+                <input id="set-sync-base" type="url" inputmode="url" spellcheck="false"
+                       autocomplete="off" autocapitalize="off" placeholder="(this site)"
+                       style="flex:1;min-width:0;max-width:240px">
+              </div>
             </div>
           </div>
         </section>
@@ -393,6 +398,6 @@
   <!-- Sets window.KEEN_SYNC_BASE before app.js. Empty on web (same-origin sync);
        the APK ships a copy pointing at a real server. Must load before app.js. -->
   <script src="js/sync-config.js?v=1"></script>
-  <script src="js/app.js?v=51"></script>
+  <script src="js/app.js?v=52"></script>
 </body>
 </html>
