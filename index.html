@@ -21,7 +21,7 @@
   <script src="js/jsdos/js-dos.js?v=3"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=41">
+  <link rel="stylesheet" href="css/app.css?v=42">
 </head>
 <body>
   <!-- ===================== LAUNCHER (the multi-game "console") =====================
@@ -232,7 +232,7 @@
                   <option value="300">300 ms</option>
                 </select>
               </div>
-              <div class="set-row set-row-check"><span class="set-label">Pogo on desktop Alt</span>
+              <div class="set-row set-row-check desktop-only"><span class="set-label">Pogo on desktop Alt</span>
                 <label class="switch" title="Mirror the on-screen Pogo on the physical Alt key">
                   <input type="checkbox" id="set-pogodesktop"><span class="switch-knob"></span>
                 </label>
@@ -393,6 +393,6 @@
   <!-- Sets window.KEEN_SYNC_BASE before app.js. Empty on web (same-origin sync);
        the APK ships a copy pointing at a real server. Must load before app.js. -->
   <script src="js/sync-config.js?v=1"></script>
-  <script src="js/app.js?v=50"></script>
+  <script src="js/app.js?v=51"></script>
 </body>
 </html>

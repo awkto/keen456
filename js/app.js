@@ -744,6 +744,9 @@ function renderCrt() {
   const cv = $("crt-canvas");
   const gameCanvas = document.querySelector("#dos canvas");
   if (!cv || !gameCanvas) return;
+  // Soft/crisp pixels ride here too (live), so it combines with any overlay and
+  // updates without relaunching — on mobile the filter dropdown drives it.
+  gameCanvas.style.imageRendering = getSetting("rendering");
   const def = FILTERS[getSetting("filter")];
   if (def && def.sample && crtRAF) return;     // sample loop already running & self-sizing
   crtStopSample();
@@ -1490,21 +1493,24 @@ function setupSettings() {
       seg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.value === cur));
     };
     seg.querySelectorAll("button").forEach((b) => {
-      b.addEventListener("click", () => { setSetting(key, b.dataset.value); paint(); });
+      b.addEventListener("click", () => {
+        setSetting(key, b.dataset.value); paint();
+        if (key === "rendering") renderCrt();   // apply soft/crisp live to a running game
+      });
     });
     paint();
   });
-  // Native selects — Aspect / Filter / Pogo auto-retract.
-  [["set-aspect", "aspect"], ["set-filter", "filter"], ["set-pogohold", "pogohold"]].forEach(([id, key]) => {
+  // Native selects — Aspect / Pogo auto-retract. (Filter -> setupFilterSelect.)
+  [["set-aspect", "aspect"], ["set-pogohold", "pogohold"]].forEach(([id, key]) => {
     const sel = $(id);
     if (!sel) return;
     sel.value = getSetting(key);
     sel.addEventListener("change", () => {
       setSetting(key, sel.value);
       if (key === "pogohold") applyPogoHold();
-      if (key === "filter") renderCrt();   // re-draw immediately if a game is running
     });
   });
+  setupFilterSelect();
   // Checkbox — desktop pogo.
   const dp = $("set-pogodesktop");
   if (dp) {
@@ -1512,6 +1518,59 @@ function setupSettings() {
     dp.addEventListener("change", () => setSetting("pogodesktop", dp.checked ? "on" : "off"));
   }
   applyPogoHold();
+}
+
+// The screen-filter <select>.
+//  • Desktop: an overlay picker only (off/scanlines/crt/...). Soft pixels is the
+//    separate "Pixels" Crisp/Smooth toggle, so smooth + scanlines combine freely.
+//  • Mobile: the Pixels toggle is hidden, so the dropdown folds soft pixels in as
+//    composite entries that drive BOTH `rendering` and `filter` from one control.
+const MOBILE_FILTER_OPTS = [
+  ["off", "Off — crisp pixels"],
+  ["smooth", "Smooth — soft pixels"],
+  ["scanlines", "Scanlines"],
+  ["smooth-scanlines", "Smooth + Scanlines"],
+  ["crt", "CRT — scanlines + mask + vignette"],
+  ["curved", "CRT curved"],
+  ["rgb", "RGB — aperture mask"],
+  ["amber", "Amber — monochrome"],
+  ["green", "Green — phosphor"],
+];
+function setupFilterSelect() {
+  const sel = $("set-filter");
+  if (!sel) return;
+  const mq = window.matchMedia("(max-width: 820px)");
+  const desktopHTML = sel.innerHTML;   // authored desktop options, captured once
+  const encodeMobile = () => {
+    const r = getSetting("rendering"), f = getSetting("filter");
+    if (r === "smooth" && (f === "off" || !f)) return "smooth";
+    if (r === "smooth" && f === "scanlines") return "smooth-scanlines";
+    return MOBILE_FILTER_OPTS.some(([v]) => v === f) ? f : "off";
+  };
+  const build = () => {
+    if (mq.matches) {
+      sel.innerHTML = MOBILE_FILTER_OPTS
+        .map(([v, label]) => `<option value="${v}">${label}</option>`).join("");
+      sel.value = encodeMobile();
+    } else {
+      sel.innerHTML = desktopHTML;
+      sel.value = getSetting("filter");
+    }
+  };
+  build();
+  sel.addEventListener("change", () => {
+    if (mq.matches) {
+      const v = sel.value;
+      const smooth = v === "smooth" || v === "smooth-scanlines";
+      const f = v === "smooth" ? "off" : (v === "smooth-scanlines" ? "scanlines" : v);
+      setSetting("rendering", smooth ? "smooth" : "pixelated");
+      setSetting("filter", f);
+    } else {
+      setSetting("filter", sel.value);
+    }
+    renderCrt();   // applies rendering + filter live if a game is running
+  });
+  mq.addEventListener("change", build);   // re-sync if the viewport crosses the breakpoint
 }
 
 // ---- view + game wiring ----------------------------------------------------

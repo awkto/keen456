@@ -349,6 +349,7 @@ select option { background: #0c0a22; color: var(--text); }
 
   .settings-grid { grid-template-columns: 1fr; gap: 15px; }
   .pixels-row { display: none; }   /* mobile omits Pixels per the design */
+  .desktop-only { display: none; }   /* desktop-only settings (e.g. Pogo on desktop Alt) */
   .set-row { gap: 10px; }
   .set-row select { min-width: 0; max-width: 170px; }
   .seg { width: 100%; }
