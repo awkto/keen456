@@ -210,6 +210,23 @@ function touchEnabled() {
 
 // `key` scopes the IndexedDB save storage so saves persist across reloads
 // (stable per game, even when BYO bundles get fresh blob: URLs each time).
+// Which episode does a snapshot bundle actually contain? (KEEN4x.EXE / *.CK4-6)
+async function snapshotEpisode(blob) {
+  try {
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    for (const n of Object.keys(fflate.unzipSync(buf))) {
+      const m = n.match(/\.CK([456])$/i) || n.match(/^KEEN([456])[A-Z]?\.EXE$/i);
+      if (m) return m[1];
+    }
+  } catch (_) {}
+  return null;
+}
+
+// Delete this game's server slot (used to drop a poisoned cloud save).
+async function deleteServerSlot(g) {
+  try { await fetch(apiUrl("saves/" + AUTO_SLOT), { method: "DELETE", headers: { "X-Client-Id": getSyncId(g) } }); } catch (_) {}
+}
+
 async function launch(url, key) {
   $("launcher").hidden = true;
   $("game-stage").hidden = false;
@@ -235,7 +252,21 @@ async function launch(url, key) {
   // progress); otherwise boot the supplied bundle. Baseline the change-detector
   // to the booted state so the first capture isn't a false "changed".
   let bootUrl = url;
-  const saved = await saveGet(key);
+  let saved = await saveGet(key);
+  if (saved) {
+    // Reject a poisoned snapshot — one whose contents are a DIFFERENT episode than
+    // its slot (a leftover from the old stale-bundle window). Discard it (local +
+    // cloud) and boot the real bundle instead, so we never replay the wrong game.
+    const want = String(epOfKey(key) || ""), got = await snapshotEpisode(saved);
+    if (want && got && got !== want) {
+      await saveDelete(key);
+      localStorage.removeItem("keen.save.modified." + key);
+      localStorage.removeItem("keen.save.synced." + key);
+      if (serverMode && syncEnabled(key)) await deleteServerSlot(key);
+      saved = null;
+      bootUrl = launchable[key] || ("games/" + key + ".jsdos");
+    }
+  }
   if (saved) {
     savedBlobUrl = URL.createObjectURL(saved); bootUrl = savedBlobUrl;
     try { lastFsSig[key] = fsSignature(new Uint8Array(await saved.arrayBuffer())); } catch (_) { delete lastFsSig[key]; }
