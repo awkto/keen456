@@ -1324,9 +1324,21 @@ async function onPlayGame(g) {
 // Launch: the bundled demo / server game if launchable, else the stored snapshot.
 async function launchGame(g) {
   if (launchable[g]) { launch(launchable[g], g); return; }
-  const blob = await saveGet(g);
-  if (blob) { launch(URL.createObjectURL(blob), g); return; }
-  // No data at all (5/6 not yet supplied) — prompt for files.
+  let blob = await saveGet(g);
+  // No local bundle yet: if this game is synced and the server has a copy, pull it
+  // (the whole .jsdos bundle = game files + saves) so a freshly-linked device can
+  // just press Play and get everything, without re-uploading its files.
+  if ((!blob || !blob.size) && serverMode && syncEnabled(g)) {
+    const remote = await fetchRemote(g);
+    if (remote) {
+      const n = await pullFromServer(g, remote.modified);
+      await refreshAll();
+      if (n > 0) blob = await saveGet(g);
+      else { alert("Couldn't download Keen " + GAME_NUM[g] + "'s synced save from the server. Check Settings ▸ Sync server and your connection, then try again."); return; }
+    }
+  }
+  if (blob && blob.size) { launch(URL.createObjectURL(blob), g); return; }
+  // No data at all (5/6 not yet supplied, nothing on the server) — prompt for files.
   openByo();
 }
 
@@ -1481,9 +1493,11 @@ async function linkToKey(g, rawKey) {
     return;
   }
   if (anyRemote) {
-    await pullFromServer(g, remote.modified);
+    const n = await pullFromServer(g, remote.modified);
     await refreshAll();
-    $("sync-status").textContent = `✓ Linked Keen ${GAME_NUM[g]} to ${id} — downloaded the cloud save (${fmtKB(remote.size || 0)}). Press ▶ Play.`;
+    $("sync-status").textContent = n > 0
+      ? `✓ Linked Keen ${GAME_NUM[g]} to ${id} — downloaded the cloud save (${fmtKB(n)}). Press ▶ Play.`
+      : `Linked Keen ${GAME_NUM[g]} to ${id}, but the download didn't complete — check Settings ▸ Sync server and your connection, then tap Download again.`;
   } else if (anyLocal) {
     setLocalModified(g, Date.now());
     await pushSave(g);
@@ -1514,9 +1528,11 @@ async function confirmConflict() {
   if (!link) return;
   const g = link.g;
   if (conflictChoice === "cloud") {
-    if (link.remote) await pullFromServer(g, link.remote.modified);
+    const n = link.remote ? await pullFromServer(g, link.remote.modified) : 0;
     await refreshAll();
-    $("sync-status").textContent = `✓ Keen ${GAME_NUM[g]} cloud save downloaded — press ▶ Play to load it.`;
+    $("sync-status").textContent = n > 0
+      ? `✓ Keen ${GAME_NUM[g]} cloud save downloaded — press ▶ Play to load it.`
+      : `Couldn't download Keen ${GAME_NUM[g]}'s cloud save — check Settings ▸ Sync server and your connection, then try again.`;
   } else {
     setLocalModified(g, Date.now());
     await pushSave(g);
