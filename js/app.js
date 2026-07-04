@@ -233,6 +233,9 @@ async function launch(url, key) {
   $("launcher").hidden = true;
   $("game-stage").hidden = false;
   currentKey = key;
+  // Remember the last game played, so the next launch of the app/site opens on it
+  // instead of always defaulting to Keen 4.
+  try { if (isGame(key)) localStorage.setItem("keen.lastGame", key); } catch (_) {}
 
   // Emulator engine: DOSBox (default, lighter) or DOSBox-X (adds real-time
   // save/load states). The xstate class reveals the SAVE/LOAD buttons.
@@ -306,6 +309,9 @@ async function launch(url, key) {
   startCrtSync();
   renderCrt();
 
+  // Live sync indicator: show it for this game and set its resting state.
+  initSyncInd(key);
+
   // First snapshot a few seconds in, so even a very short BYO session persists
   // the uploaded game data (the timer / quit handlers might not fire in time,
   // e.g. swiping the Android app away doesn't always emit visibilitychange).
@@ -314,10 +320,7 @@ async function launch(url, key) {
   // wrote a save — covers the game's own in-menu saves without churning the
   // cloud or hitching gameplay. Realtime quicksaves and exit push immediately.
   clearInterval(saveTimer);
-  saveTimer = setInterval(async () => {
-    const r = await captureSave(key);
-    if (r.changed) pushSave(key);
-  }, 60000);
+  saveTimer = setInterval(() => syncTick(key), 60000);
 
   // Give the running game its own URL (#keen<ep>) so the browser Back button /
   // system back gesture quits it — this replaces the old on-screen Quit button.
@@ -339,6 +342,57 @@ document.addEventListener("visibilitychange", () => {
     captureSave(currentKey).then((r) => { if (r.changed || localModified(currentKey) > lastSynced(currentKey)) pushSave(currentKey); });
   }
 });
+
+// ---- live in-game sync indicator -------------------------------------------
+// A tiny always-on status of the running game's save sync: a pill in the desktop
+// sidebar corner and a dot at the top-left of the mobile controls. Steady green
+// = in sync; it only moves when there's a real difference. Clicking/tapping runs
+// an on-demand check + upload. The KEY UX: a check that finds AND uploads local
+// changes shows a distinct green ring-pulse "Backed up" — never confused with a
+// check that found nothing ("Up to date", a single soft blink).
+const SI_LABELS = {
+  synced: "Synced", checking: "Checking…", uptodate: "Up to date",
+  backedup: "Backed up ✓", conflict: "Conflict", local: "Local only", offline: "Offline",
+};
+let siHold = null;   // timer that reverts a transient state back to "synced"
+const siEls = () => [document.getElementById("sync-ind-d"), document.getElementById("sync-ind-m")].filter(Boolean);
+function setSyncInd(state, label) {
+  for (const el of siEls()) {
+    el.dataset.state = state;
+    const l = el.querySelector(".si-label");
+    if (l) l.textContent = label || SI_LABELS[state] || "";
+  }
+}
+function showSyncInd(on) { for (const el of siEls()) el.classList.toggle("show", !!on); }
+// Set a transient state, then settle back to steady "synced" after a beat.
+function siFlash(state) {
+  setSyncInd(state);
+  clearTimeout(siHold);
+  siHold = setTimeout(() => setSyncInd("synced"), state === "backedup" ? 2600 : 1200);
+}
+// Show the indicator for a freshly-launched game and set its resting state
+// (cheap, no network): dirty-but-unpushed reads as "local", else "synced".
+function initSyncInd(key) {
+  const on = serverMode && syncEnabled(key);
+  showSyncInd(on);
+  if (on) setSyncInd(localModified(key) > lastSynced(key) ? "local" : "synced");
+}
+// One check+upload cycle. Auto (60s timer) stays quiet unless it actually pushes;
+// a manual tap always gives feedback (Checking → Backed up / Up to date).
+async function syncTick(key, opts) {
+  opts = opts || {};
+  if (!key || !serverMode || !syncEnabled(key)) { showSyncInd(false); return; }
+  showSyncInd(true);
+  if (opts.manual) setSyncInd("checking");
+  const r = await captureSave(key);
+  if (r.changed || localModified(key) > lastSynced(key)) {
+    setSyncInd("checking");
+    const ok = await pushSave(key);
+    if (ok) siFlash("backedup"); else setSyncInd("offline");
+  } else if (opts.manual) {
+    siFlash("uptodate");
+  }
+}
 
 // Deep-link: opening the page at #keen<ep> auto-launches that game (server games
 // + the bundled demo). We normalize to the base URL first so a launcher entry
@@ -1683,6 +1737,13 @@ window.addEventListener("DOMContentLoaded", () => {
   // BYO game data) durable so it isn't evicted under storage pressure.
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) {}
 
+  // Open on the last game played (falls back to Keen 4). A #keen<ep> deep-link,
+  // handled later, still overrides this.
+  try { const lg = localStorage.getItem("keen.lastGame"); if (lg && isGame(lg)) game = lg; } catch (_) {}
+
+  // Tap/click the live sync indicator to force an on-demand check + upload.
+  siEls().forEach((el) => el.addEventListener("click", () => syncTick(currentKey, { manual: true })));
+
   setupRouting();
   setupSettings();
   setupDesktopPogo();
@@ -1804,6 +1865,7 @@ window.addEventListener("DOMContentLoaded", () => {
       window.__ksync = { GAMES, syncState, getSyncId, setSyncId, localModified, lastSynced,
         onPlayGame, autoSyncOnStart, pushSave, pullFromServer, refreshAll, disconnectSync,
         linkToKey, selectGame, onToggleSync, syncEnabled, setSyncEnabled,
+        setSyncInd, showSyncInd, siFlash, syncTick,
         get game() { return game; } };
     }
   } catch (_) {}

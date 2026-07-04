@@ -21,7 +21,7 @@
   <script src="js/jsdos/js-dos.js?v=3"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=42">
+  <link rel="stylesheet" href="css/app.css?v=43">
 </head>
 <body>
   <!-- ===================== LAUNCHER (the multi-game "console") =====================
@@ -350,9 +350,23 @@
          in Settings before launch. -->
     <canvas id="crt-canvas" class="crt-canvas" aria-hidden="true"></canvas>
 
+    <!-- Live sync indicator (desktop): a tiny pill in the sidebar corner showing
+         the save-sync state; click to force a check + upload. Shown only when the
+         running game's server sync is on. A green ring-pulse + "Backed up" = we
+         detected local changes AND pushed them to the server just now. -->
+    <button id="sync-ind-d" class="sync-ind" type="button"
+            aria-label="Save sync status — click to sync now">
+      <span class="si-dot"></span><span class="si-label">Synced</span>
+    </button>
+
     <!-- On-screen controls for touch devices. Sends key events straight to the
          emulator. Keen Galaxy defaults: arrows move, Ctrl=Jump, Alt=Pogo, Space=Fire. -->
     <div id="touch-controls" class="touch-controls" hidden>
+      <!-- Live sync dot (mobile): top-left of the controls area, right below the
+           screen. Green/amber/red; a green ring-ripple = changes just backed up.
+           Tap to force a sync. Shown only when the running game's sync is on. -->
+      <button id="sync-ind-m" class="sync-ind dot-only" type="button"
+              aria-label="Save sync status — tap to sync now"><span class="si-dot"></span></button>
       <div class="stick" id="stick" aria-label="movement joystick">
         <div class="stick-knob" id="stick-knob"></div>
       </div>
@@ -398,6 +412,6 @@
   <!-- Sets window.KEEN_SYNC_BASE before app.js. Empty on web (same-origin sync);
        the APK ships a copy pointing at a real server. Must load before app.js. -->
   <script src="js/sync-config.js?v=1"></script>
-  <script src="js/app.js?v=53"></script>
+  <script src="js/app.js?v=54"></script>
 </body>
 </html>

@@ -381,6 +381,104 @@ select option { background: #0c0a22; color: var(--text); }
 }
 .dos-window { flex: 1; width: 100%; height: 100%; }
 
+/* ---- live in-game sync indicator (desktop pill + mobile dot) --------------
+   One JS engine (setSyncInd) drives both nodes via [data-state]; CSS decides
+   which renders per layout. States: synced/checking/uptodate/backedup/
+   conflict/local/offline. `backedup` = we detected local changes AND pushed
+   them to the server just now (the payoff: green ring-pulse + "Backed up"). */
+.sync-ind { display: none; border: 0; background: none; }
+#sync-ind-d.show { display: inline-flex; }
+.game-stage.touch #sync-ind-d.show { display: none; }        /* touch uses the dot */
+.game-stage.touch #sync-ind-m.show { display: inline-flex; } /* dot only in touch */
+
+/* desktop pill: bottom-left, sitting at the foot of the js-dos sidebar column */
+#sync-ind-d {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 1002;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border: 1px solid #ffffff26;
+  border-radius: 999px;
+  background: rgba(8, 10, 20, 0.62);
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+  color: #e7edf3;
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background 0.2s;
+}
+#sync-ind-d:hover { background: rgba(8, 10, 20, 0.82); }
+.si-label { white-space: nowrap; }
+
+/* mobile dot: top-left of the controls area, right below the screen */
+#sync-ind-m {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 6;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+/* the status dot (shared) */
+.sync-ind .si-dot {
+  position: relative;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: #4fd777;
+  color: #4fd777;                 /* currentColor drives the glow + ring */
+  box-shadow: 0 0 5px currentColor;
+}
+#sync-ind-m .si-dot {
+  width: 13px;
+  height: 13px;
+  box-shadow: 0 0 6px currentColor, 0 0 0 3px #0006;
+}
+
+/* ---- per-state colours ---- */
+.sync-ind[data-state="synced"]   .si-dot,
+.sync-ind[data-state="uptodate"] .si-dot,
+.sync-ind[data-state="backedup"] .si-dot { background: #4fd777; color: #4fd777; }
+.sync-ind[data-state="checking"] .si-dot,
+.sync-ind[data-state="local"]    .si-dot,
+.sync-ind[data-state="offline"]  .si-dot { background: #f0b849; color: #f0b849; }
+.sync-ind[data-state="conflict"] .si-dot { background: #e8626a; color: #e8626a; }
+
+/* ---- animations ---- */
+/* checking: gentle pulse while a check/upload is in flight */
+.sync-ind[data-state="checking"] .si-dot { animation: si-pulse 0.85s ease-in-out infinite; }
+@keyframes si-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* up-to-date (checked, nothing to send): one quick soft blink, NO ring —
+   deliberately distinct from the payoff so "nothing changed" never looks
+   like "changes were uploaded". */
+.sync-ind[data-state="uptodate"] .si-dot { animation: si-blink 0.5s ease-out 1; }
+@keyframes si-blink { 0% { transform: scale(1); } 45% { transform: scale(1.6); } 100% { transform: scale(1); } }
+
+/* backed up (THE payoff): an expanding green ring-pulse (x2) around the dot */
+.sync-ind[data-state="backedup"] .si-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid #4fd777;
+  animation: si-ring 0.9s ease-out 2;
+}
+@keyframes si-ring { 0% { transform: scale(0.7); opacity: 0.85; } 100% { transform: scale(2.5); opacity: 0; } }
+
 /* Touch soft-keyboard toggle — bottom-left of the controls area. Touch only.
    (Quitting is now done with the browser Back button — see history routing.) */
 .kbd-btn { display: none; }
