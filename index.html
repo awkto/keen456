@@ -21,7 +21,7 @@
   <script src="js/jsdos/js-dos.js?v=3"></script>
   <!-- vendored: tiny zip builder used to assemble .jsdos bundles from your own data files -->
   <script src="js/fflate.min.js"></script>
-  <link rel="stylesheet" href="css/app.css?v=43">
+  <link rel="stylesheet" href="css/app.css?v=44">
 </head>
 <body>
   <!-- ===================== LAUNCHER (the multi-game "console") =====================
@@ -145,6 +145,17 @@
               <div id="sync-off-body" hidden>
                 <div class="off-note" id="sync-off-note">Sync is off for this game — this save stays in this browser only.
                   Turn it on to back up and share across devices.</div>
+                <!-- Restore: pull an existing cloud save (game files + saves) by
+                     entering its key, WITHOUT first minting a random key. One step
+                     on a fresh device: type the key -> download. -->
+                <div class="off-restore">
+                  <div class="off-restore-label">Already have this game synced on another device? Enter its key to download it here:</div>
+                  <div class="link-row">
+                    <input id="sync-restore-input" type="text" placeholder="e.g. K7QF" spellcheck="false"
+                           autocomplete="off" autocapitalize="characters">
+                    <button id="sync-restore" class="btn-2">Download</button>
+                  </div>
+                </div>
               </div>
               <p id="sync-status" class="card-note status-line"></p>
               <p class="card-note"><button id="sync-disconnect" class="linklike" hidden>Stop syncing this game on this device</button></p>
@@ -412,6 +423,6 @@
   <!-- Sets window.KEEN_SYNC_BASE before app.js. Empty on web (same-origin sync);
        the APK ships a copy pointing at a real server. Must load before app.js. -->
   <script src="js/sync-config.js?v=1"></script>
-  <script src="js/app.js?v=54"></script>
+  <script src="js/app.js?v=55"></script>
 </body>
 </html>

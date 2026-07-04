@@ -209,6 +209,9 @@ select option { background: #0c0a22; color: var(--text); }
 .link-row input { flex: 1; min-width: 0; padding: 8px 11px; background: var(--inset-bg); color: var(--text); border: 1px solid var(--inset-border); border-radius: 10px; font: 600 13px var(--font-mono); text-transform: uppercase; letter-spacing: .06em; }
 .btn-dashed { width: 100%; padding: 9px; background: transparent; color: var(--teal); border: 1px dashed var(--btn-border); border-radius: 10px; font: 700 12.5px var(--font-ui); cursor: pointer; }
 .off-note { padding: 12px; border: 1px solid var(--inset-border); border-radius: 10px; background: rgba(0,0,0,.2); color: var(--muted); font: 500 12px var(--font-ui); line-height: 1.5; }
+.off-restore { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--inset-border); }
+.off-restore-label { margin-bottom: 8px; color: var(--muted2); font: 500 12px var(--font-ui); line-height: 1.5; }
+.off-restore .link-row { margin-bottom: 0; }
 .linklike { background: none; border: none; padding: 0; cursor: pointer; color: var(--teal); text-decoration: underline; font: inherit; }
 
 /* how to play */

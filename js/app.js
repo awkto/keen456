@@ -1816,6 +1816,13 @@ window.addEventListener("DOMContentLoaded", () => {
     apply.addEventListener("click", () => linkToKey(game, input.value));
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") linkToKey(game, input.value); });
   }
+  // Off-state "restore from a key": links + downloads in one step, no random key
+  // first (linkToKey enables sync, pulls the cloud bundle, and refreshes).
+  const restore = $("sync-restore"), restoreInput = $("sync-restore-input");
+  if (restore && restoreInput) {
+    restore.addEventListener("click", () => linkToKey(game, restoreInput.value));
+    restoreInput.addEventListener("keydown", (e) => { if (e.key === "Enter") linkToKey(game, restoreInput.value); });
+  }
   const disc = $("sync-disconnect");
   if (disc) disc.addEventListener("click", () => disconnectSync(game));
 
