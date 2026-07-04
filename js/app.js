@@ -136,6 +136,19 @@ let mView = "play";         // mobile bottom-tab view: play|saves|sync|howto|set
 // it (portable across browsers/devices). Same approach as the zeliard build.
 const SAVE_DB = "keen-saves";
 const SAVE_STORE = "blobs";
+const SAVE_CACHE = "keen-saves";               // Cache Storage mirror (second backend)
+const cacheKey = (key) => "/__save__/" + encodeURIComponent(key);
+
+// Every save is written to BOTH IndexedDB and the Cache Storage API and read
+// from whichever answers: Android WebView has eaten IDB data in the wild (Blob
+// backing-file eviction, silently failing writes), so one flaky backend must
+// not lose the game. Writes are verified by reading back, and the last failure
+// is kept in `storeErr` so the UI can say WHY instead of pretending it worked.
+let storeErr = "";
+function noteStoreErr(op, e) {
+  storeErr = op + ": " + (e && e.name ? e.name + (e.message ? " — " + e.message : "") : String(e || "failed"));
+  try { console.warn("save-store", storeErr); } catch (_) {}
+}
 
 function idbOpen() {
   return new Promise((resolve, reject) => {
@@ -145,40 +158,74 @@ function idbOpen() {
     r.onerror = () => reject(r.error);
   });
 }
+async function idbGetRaw(key) {
+  try { const db = await idbOpen();
+    return await new Promise((res, rej) => {
+      const t = db.transaction(SAVE_STORE, "readonly").objectStore(SAVE_STORE).get(key);
+      t.onsuccess = () => res(t.result || null); t.onerror = () => rej(t.error);
+    });
+  } catch (e) { noteStoreErr("idb-get", e); return null; }
+}
+async function idbPutRaw(key, buf) {
+  try { const db = await idbOpen();
+    return await new Promise((res, rej) => {
+      const t = db.transaction(SAVE_STORE, "readwrite").objectStore(SAVE_STORE).put(buf, key);
+      t.onsuccess = () => res(true); t.onerror = () => rej(t.error);
+    });
+  } catch (e) { noteStoreErr("idb-put", e); return false; }
+}
+async function cacheGetRaw(key) {
+  try {
+    const c = await caches.open(SAVE_CACHE);
+    const r = await c.match(cacheKey(key));
+    if (!r) return null;
+    const buf = await r.arrayBuffer();
+    return buf.byteLength ? buf : null;
+  } catch (e) { noteStoreErr("cache-get", e); return null; }
+}
+async function cachePutRaw(key, buf) {
+  try {
+    const c = await caches.open(SAVE_CACHE);
+    await c.put(cacheKey(key), new Response(buf.slice(0), { headers: { "Content-Type": "application/octet-stream" } }));
+    return true;
+  } catch (e) { noteStoreErr("cache-put", e); return false; }
+}
+
 // Values are stored as ArrayBuffers, not Blobs: Android WebView keeps IDB Blobs
 // as references to temp files that can be evicted, so a Blob written today reads
 // back empty tomorrow (or immediately, on some devices). ArrayBuffers are cloned
 // by value and survive. saveGet still hands callers a Blob either way.
 async function saveGet(key) {
-  try { const db = await idbOpen();
-    const v = await new Promise((res) => {
-      const t = db.transaction(SAVE_STORE, "readonly").objectStore(SAVE_STORE).get(key);
-      t.onsuccess = () => res(t.result || null); t.onerror = () => res(null);
-    });
-    if (!v) return null;
+  try {
+    let v = await idbGetRaw(key);
     if (v instanceof Blob) {
       // Legacy entry from an older version: migrate to bytes now, while (if)
       // the Blob is still readable. If its backing data is already gone we
-      // report "no save" so the caller falls back to a server pull.
-      try {
-        const buf = await v.arrayBuffer();
-        if (!buf.byteLength) return null;
-        savePut(key, buf);
-        return new Blob([buf], { type: "application/octet-stream" });
-      } catch (_) { return null; }
+      // treat it as missing so the caller falls back to the Cache copy/server.
+      try { const b = await v.arrayBuffer(); v = b.byteLength ? b : null; if (v) idbPutRaw(key, v); }
+      catch (e) { noteStoreErr("idb-blob-read", e); v = null; }
     }
+    if (!v || !(v.byteLength || v.length)) {
+      v = await cacheGetRaw(key);
+      if (v) idbPutRaw(key, v);   // heal the IDB copy from the Cache mirror
+    }
+    if (!v) return null;
     return new Blob([v], { type: "application/octet-stream" });
-  } catch (_) { return null; }
+  } catch (e) { noteStoreErr("get", e); return null; }
 }
+// Write to both backends and verify at least one read-back matches. Returns
+// true only when the save is genuinely retrievable afterwards.
 async function savePut(key, blob) {
   try {
     const buf = blob instanceof Blob ? await blob.arrayBuffer() : blob;
-    const db = await idbOpen();
-    return await new Promise((res) => {
-      const t = db.transaction(SAVE_STORE, "readwrite").objectStore(SAVE_STORE).put(buf, key);
-      t.onsuccess = () => res(true); t.onerror = () => res(false);
-    });
-  } catch (_) { return false; }
+    const size = buf.byteLength || buf.length || 0;
+    const okIdb = await idbPutRaw(key, buf);
+    const okCache = await cachePutRaw(key, buf);
+    if (!okIdb && !okCache) return false;
+    const back = await saveGet(key);
+    if (!back || back.size !== size) { noteStoreErr("verify", { name: "ReadBackMismatch", message: (back ? back.size : "nothing") + " of " + size + " bytes" }); return false; }
+    return true;
+  } catch (e) { noteStoreErr("put", e); return false; }
 }
 async function saveDelete(key) {
   try { const db = await idbOpen();
@@ -187,6 +234,7 @@ async function saveDelete(key) {
       t.onsuccess = () => res(); t.onerror = () => res();
     });
   } catch (_) {}
+  try { const c = await caches.open(SAVE_CACHE); await c.delete(cacheKey(key)); } catch (_) {}
 }
 
 let capturing = false;
@@ -1120,19 +1168,24 @@ async function pushSave(g) {
 
 // Download one game's server save into this browser; marks it synced. Returns
 // the pulled bytes (Uint8Array) or null, so callers can boot straight from the
-// in-memory copy instead of trusting an IndexedDB read-back.
+// in-memory copy instead of trusting an IndexedDB read-back. `lastPullStored`
+// says whether the device managed to KEEP the bytes (verified read-back) —
+// callers must not claim success on a download this device couldn't store.
+let lastPullStored = true;
 async function pullFromServer(g, modified) {
   try {
     const r = await fetch(apiUrl("saves/" + slotFor(g)), { headers: { "X-Client-Id": getSyncId(g) }, cache: "no-store" });
     if (!r.ok) return null;
     const buf = new Uint8Array(await r.arrayBuffer());
     if (!buf.length) return null;
-    await savePut(g, buf);
+    lastPullStored = await savePut(g, buf);
     markSynced(g, modified || Date.now());
     lastFsSig[g] = fsSignature(buf);   // baseline = the just-pulled content
     return buf;
   } catch (_) { return null; }
 }
+// One line describing a failed store, for status messages ("" when fine).
+const storeFailNote = () => storeErr ? ` Storage error: ${storeErr}.` : "";
 
 // On launch, auto-download newer server saves — but ONLY for games where it's
 // safe (sync on, and this device has no unsynced changes of its own). Divergence
@@ -1229,6 +1282,10 @@ async function refreshSavedCard() {
   $("saved-has").hidden = !has;
   $("saved-none").hidden = has;
   if (has) $("saved-size").textContent = fmtKB(b.size);
+  // If storage itself is failing on this device, say so instead of the generic
+  // "no save yet" (key diagnostic for the Android WebView storage bug).
+  const noneText = $("saved-none-text");
+  if (noneText && !has && storeErr) noneText.textContent = `No saved game could be read on this device — its browser storage is failing (${storeErr}). Synced games still play by re-downloading from the server.`;
 }
 
 async function refreshSyncCard() {
@@ -1349,15 +1406,23 @@ async function launchGame(g) {
   // No local bundle yet: if this game is synced and the server has a copy, pull it
   // (the whole .jsdos bundle = game files + saves) so a freshly-linked device can
   // just press Play and get everything, without re-uploading its files.
-  if ((!blob || !blob.size) && serverMode && syncEnabled(g)) {
-    const remote = await fetchRemote(g);
-    if (remote) {
-      const buf = await pullFromServer(g, remote.modified);
-      await refreshAll();
-      // Boot straight from the downloaded bytes — never depend on reading them
-      // back out of IndexedDB (unreliable on Android WebView).
-      if (buf) blob = new Blob([buf], { type: "application/octet-stream" });
-      else { alert("Couldn't download Keen " + GAME_NUM[g] + "'s synced save from the server. Check Settings ▸ Sync server and your connection, then try again."); return; }
+  if ((!blob || !blob.size) && syncEnabled(g)) {
+    if (!serverMode) await detectServerMode();   // e.g. app opened offline, then regained network
+    if (serverMode) {
+      const remote = await fetchRemote(g);
+      if (remote) {
+        const buf = await pullFromServer(g, remote.modified);
+        await refreshAll();
+        // Boot straight from the downloaded bytes — never depend on reading them
+        // back out of IndexedDB (unreliable on Android WebView).
+        if (buf) blob = new Blob([buf], { type: "application/octet-stream" });
+        else { alert("Couldn't download Keen " + GAME_NUM[g] + "'s synced save from the server. Check Settings ▸ Sync server and your connection, then try again."); return; }
+      }
+      // remote === null with sync ON means "no cloud copy for this key yet" —
+      // fall through to the upload prompt, that's genuinely the next step.
+    } else {
+      alert("Keen " + GAME_NUM[g] + " has sync ON but the sync server can't be reached right now — connect and try again, or upload the game files to play offline.");
+      return;
     }
   }
   if (blob && blob.size) { launch(URL.createObjectURL(blob), g); return; }
@@ -1518,9 +1583,11 @@ async function linkToKey(g, rawKey) {
   if (anyRemote) {
     const buf = await pullFromServer(g, remote.modified);
     await refreshAll();
-    $("sync-status").textContent = buf
-      ? `✓ Linked Keen ${GAME_NUM[g]} to ${id} — downloaded the cloud save (${fmtKB(buf.length)}). Press ▶ Play.`
-      : `Linked Keen ${GAME_NUM[g]} to ${id}, but the download didn't complete — check Settings ▸ Sync server and your connection, then tap Download again.`;
+    $("sync-status").textContent = !buf
+      ? `Linked Keen ${GAME_NUM[g]} to ${id}, but the download didn't complete — check Settings ▸ Sync server and your connection, then tap Download again.`
+      : lastPullStored
+        ? `✓ Linked Keen ${GAME_NUM[g]} to ${id} — downloaded the cloud save (${fmtKB(buf.length)}). Press ▶ Play.`
+        : `⚠ Downloaded Keen ${GAME_NUM[g]} (${fmtKB(buf.length)}) from ${id}, but this device FAILED to store it — Play will re-download it each time.${storeFailNote()}`;
   } else if (anyLocal) {
     setLocalModified(g, Date.now());
     await pushSave(g);
@@ -1553,9 +1620,11 @@ async function confirmConflict() {
   if (conflictChoice === "cloud") {
     const buf = link.remote ? await pullFromServer(g, link.remote.modified) : null;
     await refreshAll();
-    $("sync-status").textContent = buf
-      ? `✓ Keen ${GAME_NUM[g]} cloud save downloaded — press ▶ Play to load it.`
-      : `Couldn't download Keen ${GAME_NUM[g]}'s cloud save — check Settings ▸ Sync server and your connection, then try again.`;
+    $("sync-status").textContent = !buf
+      ? `Couldn't download Keen ${GAME_NUM[g]}'s cloud save — check Settings ▸ Sync server and your connection, then try again.`
+      : lastPullStored
+        ? `✓ Keen ${GAME_NUM[g]} cloud save downloaded — press ▶ Play to load it.`
+        : `⚠ Downloaded Keen ${GAME_NUM[g]}'s cloud save, but this device FAILED to store it — Play will re-download it each time.${storeFailNote()}`;
   } else {
     setLocalModified(g, Date.now());
     await pushSave(g);
@@ -1913,6 +1982,7 @@ window.addEventListener("DOMContentLoaded", () => {
         linkToKey, selectGame, onToggleSync, syncEnabled, setSyncEnabled,
         setSyncInd, showSyncInd, siFlash, syncTick,
         saveGet, savePut, saveDelete,
+        get storeErr() { return storeErr; }, get lastPullStored() { return lastPullStored; },
         get game() { return game; } };
     }
   } catch (_) {}
