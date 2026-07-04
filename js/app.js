@@ -16,8 +16,10 @@
  *   localStorage["keen.sync."   + g]         — that game's on/off (default off)
  *   localStorage["keen.save.modified." + g]  — local dirty stamp
  *   localStorage["keen.save.synced."   + g]  — last push/pull stamp
- * Server calls for game g use that game's key as X-Client-Id and slot "auto"
- * (one slot per key, since the key is per game). saves-api.py is unchanged.
+ * Server calls for game g use that game's key as X-Client-Id and the game id
+ * as the slot, so even a single shared key keeps each episode's save in its own
+ * server slot (/saves/<key>/<game>.bin) and can't cross-contaminate. saves-api.py
+ * is unchanged.
  *
  * Wrapped in an IIFE: js-dos.js declares globals (incl. `var $`), so we keep our
  * own top-level names out of global scope.
@@ -195,7 +197,7 @@ async function captureSave(key) {
 
 // ---- settings (persisted in localStorage) ----------------------------------
 
-const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto", engine: "dosbox", pogohold: "180", pogodesktop: "off", filter: "off" };
+const SETTING_DEFAULTS = { aspect: "4/3", rendering: "smooth", touch: "auto", engine: "dosbox", pogohold: "180", pogodesktop: "off", filter: "scanlines" };
 const getSetting = (k) => localStorage.getItem("keen." + k) || SETTING_DEFAULTS[k];
 const setSetting = (k, v) => localStorage.setItem("keen." + k, v);
 
@@ -224,7 +226,7 @@ async function snapshotEpisode(blob) {
 
 // Delete this game's server slot (used to drop a poisoned cloud save).
 async function deleteServerSlot(g) {
-  try { await fetch(apiUrl("saves/" + AUTO_SLOT), { method: "DELETE", headers: { "X-Client-Id": getSyncId(g) } }); } catch (_) {}
+  try { await fetch(apiUrl("saves/" + slotFor(g)), { method: "DELETE", headers: { "X-Client-Id": getSyncId(g) } }); } catch (_) {}
 }
 
 async function launch(url, key) {
@@ -900,7 +902,11 @@ function setupTouchControls() {
 // that game — the other two are untouched.
 let serverMode = false;
 let serverManifestActive = false;   // a kiosk/server manifest replaced the play surface
-const AUTO_SLOT = "auto";           // one slot per (per-game) key
+// Server slot = the game id, so a single shared sync key still keeps each
+// episode's save separate on disk (path /saves/<key>/<game>.bin). Legacy builds
+// used one constant "auto" slot per key, which cross-contaminated when the same
+// key was reused across episodes (loading keen4 could pull a keen6 save).
+const slotFor = (g) => g;
 // Sync target, resolved live so it can change at runtime (Settings ▸ Sync server):
 //   in-app override (localStorage) -> baked default (window.KEEN_SYNC_BASE, set by
 //   the APK build via js/sync-config.js) -> same-origin (web container, blank).
@@ -985,12 +991,12 @@ async function detectServerMode() {
 
 const fmtKB = (n) => Math.round(n / 1024) + " KB";
 
-// The server meta for ONE game's key (slot "auto"): { modified, size } or null.
+// The server meta for ONE game's key (slot = game id): { modified, size } or null.
 async function fetchRemote(g) {
   try {
     const r = await fetch(apiUrl("saves"), { headers: { "X-Client-Id": getSyncId(g) }, cache: "no-store" });
     if (!r.ok) return null;
-    for (const s of await r.json()) if (s.slot === AUTO_SLOT) return s;
+    for (const s of await r.json()) if (s.slot === slotFor(g)) return s;
     return null;
   } catch (_) { return null; }
 }
@@ -1021,7 +1027,7 @@ async function syncState(g) {
            size: (remote && remote.size) || (blob && blob.size) || 0 };
 }
 
-// Upload one game's local save (to that game's key, slot "auto"); marks it
+// Upload one game's local save (to that game's key, slot = game id); marks it
 // synced. Returns true on success.
 async function pushSave(g) {
   if (!serverMode || !syncEnabled(g) || !g) return false;
@@ -1029,7 +1035,7 @@ async function pushSave(g) {
   if (!blob || !blob.size) return false;
   const modified = localModified(g) || Date.now();
   try {
-    const r = await fetch(apiUrl("saves/" + AUTO_SLOT), {
+    const r = await fetch(apiUrl("saves/" + slotFor(g)), {
       method: "PUT",
       headers: { "X-Client-Id": getSyncId(g), "X-Save-Modified": String(modified) },
       body: blob,
@@ -1042,7 +1048,7 @@ async function pushSave(g) {
 // Download one game's server save into this browser; marks it synced. Returns bytes.
 async function pullFromServer(g, modified) {
   try {
-    const r = await fetch(apiUrl("saves/" + AUTO_SLOT), { headers: { "X-Client-Id": getSyncId(g) }, cache: "no-store" });
+    const r = await fetch(apiUrl("saves/" + slotFor(g)), { headers: { "X-Client-Id": getSyncId(g) }, cache: "no-store" });
     if (!r.ok) return 0;
     const buf = new Uint8Array(await r.arrayBuffer());
     if (!buf.length) return 0;
