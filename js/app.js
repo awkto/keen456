@@ -1105,10 +1105,19 @@ function fsSignature(zipU8) {
 }
 
 async function detectServerMode() {
-  try { const r = await fetch(apiUrl("health"), { cache: "no-store" }); serverMode = r.ok; }
-  catch (_) { serverMode = false; }
+  // Require the exact {"ok": true} shape of OUR saves API — any-200-JSON once
+  // let a mistyped hostname (answered by a different app's healthy-looking
+  // /api/health) masquerade as a working sync server while every real sync
+  // call 401'd silently.
+  try {
+    const r = await fetch(apiUrl("health"), { cache: "no-store" });
+    const j = r.ok ? await r.json().catch(() => null) : null;
+    serverMode = !!(j && j.ok === true);
+  } catch (_) { serverMode = false; }
   return serverMode;
 }
+// The sync server's hostname, for status messages ("which server am I on?").
+const apiHost = () => { try { return new URL(apiUrl("health")).host; } catch (_) { return "?"; } };
 
 const fmtKB = (n) => Math.round(n / 1024) + " KB";
 
@@ -1586,16 +1595,16 @@ async function linkToKey(g, rawKey) {
     $("sync-status").textContent = !buf
       ? `Linked Keen ${GAME_NUM[g]} to ${id}, but the download didn't complete — check Settings ▸ Sync server and your connection, then tap Download again.`
       : lastPullStored
-        ? `✓ Linked Keen ${GAME_NUM[g]} to ${id} — downloaded the cloud save (${fmtKB(buf.length)}). Press ▶ Play.`
+        ? `✓ Linked Keen ${GAME_NUM[g]} to ${id} on ${apiHost()} — downloaded the cloud save (${fmtKB(buf.length)}). Press ▶ Play.`
         : `⚠ Downloaded Keen ${GAME_NUM[g]} (${fmtKB(buf.length)}) from ${id}, but this device FAILED to store it — Play will re-download it each time.${storeFailNote()}`;
   } else if (anyLocal) {
     setLocalModified(g, Date.now());
     await pushSave(g);
     await refreshAll();
-    $("sync-status").textContent = `✓ Linked Keen ${GAME_NUM[g]} to ${id} — uploaded this device's save.`;
+    $("sync-status").textContent = `✓ Linked Keen ${GAME_NUM[g]} to ${id} on ${apiHost()} — uploaded this device's save.`;
   } else {
     await refreshAll();
-    $("sync-status").textContent = `Linked Keen ${GAME_NUM[g]} to key ${id}. No save here or on the server yet — play to create one.`;
+    $("sync-status").textContent = `Linked Keen ${GAME_NUM[g]} to key ${id}, but ${apiHost()} has no Keen ${GAME_NUM[g]} save for that key. If your save lives on another server, fix Settings ▸ Sync server first; otherwise play to create one.`;
   }
 }
 
