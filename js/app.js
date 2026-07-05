@@ -562,20 +562,27 @@ async function handleFiles(fileList) {
     .map((n) => `<div class="${n.ok ? "ok" : "miss"}">${n.ok ? "✓" : "✗"} ${n.text}</div>`)
     .join("");
 
-  const names = files.map((f) => f.name);
-  const has = (re) => names.some((n) => re.test(n));
-  const exe = files.find((f) => /\.EXE$/.test(f.name) && /KEEN/.test(f.name))
-           || files.find((f) => /\.EXE$/.test(f.name));
+  // The picker serves the game the UI is on: keep ONLY this episode's files
+  // (data files with its .CKn suffix, its KEENn*.EXE, plus neutral extras such
+  // as configs), ignore any other episode's files with a note, and report
+  // exactly what's missing when the set is incomplete.
+  const ep = String(GAME_NUM[game]);                           // "4" / "5" / "6"
+  const epOf = (n) => { const m = n.match(/\.CK([456])$/) || n.match(/^KEEN([456])[A-Z]?\.EXE$/); return m ? m[1] : null; };
+  const mine = files.filter((f) => epOf(f.name) === ep);
+  const foreign = files.filter((f) => { const e = epOf(f.name); return e && e !== ep; });
+  const neutral = files.filter((f) => !epOf(f.name));          // README, configs, odd EXEs…
 
-  // Which episode? Derive from the CKx extension present.
-  const epMatch = names.map((n) => n.match(/\.CK([456])$/)).find(Boolean);
-  const episode = epMatch ? epMatch[1] : null;
+  const has = (re) => mine.some((f) => re.test(f.name));
+  // Prefer the episode's own KEENn*.EXE; otherwise accept a generically-named
+  // .EXE from the neutral pool (some rips ship renamed executables).
+  const exe = mine.find((f) => new RegExp("^KEEN" + ep + "[A-Z]?\\.EXE$").test(f.name))
+           || neutral.find((f) => /\.EXE$/.test(f.name));
 
   const checks = [
-    [has(DATA_RE.audio), "AUDIO.CK" + (episode || "?")],
-    [has(DATA_RE.egagraph), "EGAGRAPH.CK" + (episode || "?")],
-    [has(DATA_RE.gamemaps), "GAMEMAPS.CK" + (episode || "?")],
-    [!!exe, "game .EXE"],
+    [has(new RegExp("^AUDIO\\.CK" + ep + "$")), "AUDIO.CK" + ep],
+    [has(new RegExp("^EGAGRAPH\\.CK" + ep + "$")), "EGAGRAPH.CK" + ep],
+    [has(new RegExp("^GAMEMAPS\\.CK" + ep + "$")), "GAMEMAPS.CK" + ep],
+    [!!exe, "KEEN" + ep + ".EXE"],
   ];
 
   const rows = checks
@@ -584,18 +591,25 @@ async function handleFiles(fileList) {
 
   const allOk = checks.every(([ok]) => ok);
   let extra = "";
-  if (allOk && episode === "6") {
-    extra = /6C\.EXE$/i.test(exe.name)
+  if (foreign.length) {
+    const others = [...new Set(foreign.map((f) => epOf(f.name)))].sort().map((e) => "Keen " + e).join(", ");
+    extra += `<div style="margin-top:.5rem">ℹ Ignored ${foreign.length} file(s) from ${others} — this picker installs <strong>Keen ${ep}</strong>. To install ${others}, pick that game in the game bar and upload there.</div>`;
+  }
+  if (!mine.length && !allOk) {
+    extra += `<div class="miss" style="margin-top:.5rem">No Keen ${ep} files found${foreign.length ? " in this selection" : ""} — expected <code>*.CK${ep}</code> data files and <code>KEEN${ep}.EXE</code>.</div>`;
+  }
+  if (allOk && ep === "6") {
+    extra += /6C\.EXE$/i.test(exe.name)
       ? `<div class="ok" style="margin-top:.5rem">✓ Using ${exe.name} — boots straight past the Keen 6 copy-protection prompt.</div>`
       : `<div style="margin-top:.5rem">⚠ Keen 6 shows a "Creature Question" copy-protection prompt at startup (the answers are in the game's manual). A pre-patched <code>KEEN6C.EXE</code> boots past it — supply that instead of the stock <code>KEEN6.EXE</code>.</div>`;
   }
-  status.innerHTML = noteRows + `<div><strong>Selected ${files.length} file(s)` +
-    (episode ? ` — detected Keen ${episode}` : "") + `:</strong></div>` + rows + extra;
+  status.innerHTML = noteRows + `<div><strong>Keen ${ep}: ${mine.length + (exe && !mine.includes(exe) ? 1 : 0)} usable file(s)` +
+    ` of ${files.length} selected:</strong></div>` + rows + extra;
 
   if (allOk) {
-    pendingFiles = files;
+    pendingFiles = [...mine, ...(mine.includes(exe) ? [] : [exe]), ...neutral.filter((f) => f !== exe && !/\.EXE$/.test(f.name))];
     pendingRunCmd = exe.name;
-    pendingKey = "keen" + (episode || "x");
+    pendingKey = "keen" + ep;
     $("play-byo").disabled = false;
   }
 }
@@ -611,8 +625,15 @@ function buildBundleBlob(files, runCmd) {
   return new Blob([zipped], { type: "application/octet-stream" });
 }
 
-function playByo() {
+async function playByo() {
   if (!pendingFiles) return;
+  // Never silently clobber an existing snapshot — it holds the in-game SAVES,
+  // not just game data, and the next sync push would overwrite the cloud too.
+  if (pendingKey) {
+    const existing = await saveGet(pendingKey);
+    if (existing && existing.size &&
+        !confirm(`Keen ${GAME_NUM[pendingKey]} already has saved game data on this device (${fmtKB(existing.size)}), including any in-game save slots. Replace it with the freshly uploaded files?\n\nIn-game progress is lost — and if sync is on, the cloud copy gets overwritten too.`)) return;
+  }
   const blob = buildBundleBlob(pendingFiles, pendingRunCmd);
   pendingBlobUrl = URL.createObjectURL(blob);
   // Persist the uploaded game data right away (keyed per game) so it survives
