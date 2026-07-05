@@ -478,17 +478,89 @@ const DATA_RE = {
   gamemaps: /^GAMEMAPS\.CK[456]$/,
 };
 
+// ---- archive uploads (.zip / .tar.gz / .tar) --------------------------------
+// The picker also accepts a whole archive of the game folder. It's extracted
+// client-side (fflate is already vendored), nested folders are flattened to
+// bare filenames, junk entries are skipped, and the contents run through the
+// same detection as loose files. 7z/rar would need a whole LZMA library, so
+// they're rejected with a hint instead.
+const ARCHIVE_MAX_IN = 64 * 1024 * 1024;     // compressed cap (an episode is ~1 MB)
+const ARCHIVE_MAX_OUT = 256 * 1024 * 1024;   // uncompressed total cap (zip-bomb guard)
+const ARCHIVE_JUNK = /(^|\/)(__MACOSX(\/|$)|\.DS_STORE$|THUMBS\.DB$|desktop\.ini$)/i;
+
+// Minimal ustar walker: 512-byte headers; name at 0, size (octal) at 124,
+// type flag at 156, long-path prefix at 345. Enough for real-world game tars.
+function untar(u8) {
+  const out = [];
+  const str = (start, len) => { let s = ""; for (let i = start; i < start + len && u8[i]; i++) s += String.fromCharCode(u8[i]); return s; };
+  let off = 0;
+  while (off + 512 <= u8.length) {
+    const name = str(off, 100);
+    if (!name) break;                                      // zero block = end of archive
+    const size = parseInt(str(off + 124, 12).trim() || "0", 8) || 0;
+    const type = u8[off + 156];                            // "0" or NUL = regular file
+    const prefix = str(off + 345, 155);
+    off += 512;
+    if (type === 0 || type === 48) out.push({ path: prefix ? prefix + "/" + name : name, data: u8.subarray(off, off + size) });
+    off += Math.ceil(size / 512) * 512;
+  }
+  return out;
+}
+
+// Expand any archives in a picked file list into their contained files (loose
+// files pass straight through). Returns { files: [{name, data}], notes: [{ok,
+// text}] } — notes report extractions and per-archive failures for the UI.
+async function expandArchives(fileList) {
+  const files = [], notes = [];
+  const push = (path, data) => {
+    const base = (path || "").split(/[\\/]/).pop();
+    if (!base || !data || !data.length) return false;
+    const name = base.toUpperCase();
+    if (files.some((x) => x.name === name)) return false;  // nested duplicate: first wins
+    files.push({ name, data });
+    return true;
+  };
+  for (const f of fileList) {
+    const lower = (f.name || "").toLowerCase();
+    const isZip = /\.zip$/.test(lower);
+    const isTgz = /\.(tar\.gz|tgz)$/.test(lower);
+    const isTar = /\.tar$/.test(lower);
+    if (!isZip && !isTgz && !isTar) {
+      if (/\.(7z|rar|gz|bz2|xz)$/.test(lower)) { notes.push({ ok: false, text: `${f.name}: only .zip, .tar.gz and .tar archives are supported — please repack as .zip.` }); continue; }
+      push(f.name, new Uint8Array(await f.arrayBuffer()));
+      continue;
+    }
+    if (f.size > ARCHIVE_MAX_IN) { notes.push({ ok: false, text: `${f.name} is ${fmtKB(f.size)} — archives over ${fmtKB(ARCHIVE_MAX_IN)} aren't accepted.` }); continue; }
+    try {
+      const raw = new Uint8Array(await f.arrayBuffer());
+      const entries = isZip
+        ? Object.entries(fflate.unzipSync(raw)).map(([path, data]) => ({ path, data }))
+        : untar(isTgz ? fflate.gunzipSync(raw) : raw);
+      let total = 0, n = 0;
+      for (const { path, data } of entries) {
+        if (path.endsWith("/") || ARCHIVE_JUNK.test(path)) continue;
+        total += data.length;
+        if (total > ARCHIVE_MAX_OUT) throw new Error("contents exceed " + fmtKB(ARCHIVE_MAX_OUT) + " uncompressed");
+        if (push(path, data)) n++;
+      }
+      notes.push({ ok: n > 0, text: n > 0 ? `Extracted ${n} file(s) from ${f.name}.` : `${f.name} contained no usable files.` });
+    } catch (e) {
+      notes.push({ ok: false, text: `Couldn't extract ${f.name}: ${(e && e.message) || "not a valid archive"} (encrypted archives aren't supported).` });
+    }
+  }
+  return { files, notes };
+}
+
 async function handleFiles(fileList) {
   const status = $("file-status");
   status.hidden = false;
   $("play-byo").disabled = true;
   pendingFiles = null;
 
-  const files = [];
-  for (const f of fileList) {
-    const name = f.name.toUpperCase();
-    files.push({ name, data: new Uint8Array(await f.arrayBuffer()) });
-  }
+  const { files, notes } = await expandArchives(fileList);
+  const noteRows = notes
+    .map((n) => `<div class="${n.ok ? "ok" : "miss"}">${n.ok ? "✓" : "✗"} ${n.text}</div>`)
+    .join("");
 
   const names = files.map((f) => f.name);
   const has = (re) => names.some((n) => re.test(n));
@@ -517,7 +589,7 @@ async function handleFiles(fileList) {
       ? `<div class="ok" style="margin-top:.5rem">✓ Using ${exe.name} — boots straight past the Keen 6 copy-protection prompt.</div>`
       : `<div style="margin-top:.5rem">⚠ Keen 6 shows a "Creature Question" copy-protection prompt at startup (the answers are in the game's manual). A pre-patched <code>KEEN6C.EXE</code> boots past it — supply that instead of the stock <code>KEEN6.EXE</code>.</div>`;
   }
-  status.innerHTML = `<div><strong>Selected ${files.length} file(s)` +
+  status.innerHTML = noteRows + `<div><strong>Selected ${files.length} file(s)` +
     (episode ? ` — detected Keen ${episode}` : "") + `:</strong></div>` + rows + extra;
 
   if (allOk) {
