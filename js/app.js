@@ -836,6 +836,14 @@ function backendTrigger(event) {
     try { gameCi.sendBackendEvent({ type: "wc-trigger-event", event }); } catch (_) {}
   }
 }
+// Quicksave: trigger the state, then capture + push immediately (don't wait for
+// the 60s net) so closing right after a quicksave still reaches the cloud.
+function quickSaveState() {
+  backendTrigger("hand_savestate");
+  setTimeout(async () => { await captureSave(currentKey); await pushSave(currentKey); }, 700);
+}
+function quickLoadState() { backendTrigger("hand_loadstate"); }
+
 // Realtime save states behind a 💾 popup (DOSBox-X). Tapping 💾 opens a Save/Load
 // popup; tapping either runs the emulator state action (and persists) and closes it.
 function setupSaveLoad() {
@@ -862,10 +870,8 @@ function setupSaveLoad() {
     btn.addEventListener("contextmenu", (e) => e.preventDefault());
     btn.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
   };
-  // Quicksave: trigger the state, then capture + push immediately (don't wait for
-  // the 60s net) so closing right after a quicksave still reaches the cloud.
-  act(save, () => { backendTrigger("hand_savestate"); setTimeout(async () => { await captureSave(currentKey); await pushSave(currentKey); }, 700); });
-  act(load, () => backendTrigger("hand_loadstate"));
+  act(save, quickSaveState);
+  act(load, quickLoadState);
 
   // Tap outside the popup/trigger to dismiss.
   document.addEventListener("pointerdown", (e) => {
@@ -1796,6 +1802,69 @@ function setupDesktopPogo() {
   }, true);
 }
 
+// ---- desktop fullscreen ----------------------------------------------------
+// js-dos's own sidebar fullscreen button fullscreens the bare game canvas — which
+// drops the CRT overlay (no filters) and stretches off-aspect. Redirecting every
+// in-stage fullscreen request to #game-stage (which holds BOTH the canvas and the
+// #crt-canvas overlay) fixes both and keeps 4:3 aspect. renderCrt on
+// fullscreenchange realigns the overlay.
+function fsElement() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
+function fsRequest(el) {
+  const fn = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (fn) { try { fn.call(el); } catch (_) {} }
+}
+function fsExit() {
+  const fn = document.exitFullscreen || document.webkitExitFullscreen;
+  if (fn) { try { fn.call(document); } catch (_) {} }
+}
+function toggleFullscreen() {
+  if (fsElement()) fsExit();
+  else { const s = $("game-stage"); if (s) fsRequest(s); }
+}
+function setupFullscreen() {
+  // Redirect the js-dos sidebar button (and any in-stage requestFullscreen) to the
+  // whole stage so the overlay is included and aspect is preserved.
+  ["requestFullscreen", "webkitRequestFullscreen"].forEach((name) => {
+    const orig = Element.prototype[name];
+    if (!orig) return;
+    Element.prototype[name] = function (...args) {
+      const stage = document.getElementById("game-stage");
+      if (stage && this !== stage && stage.contains(this)) return orig.apply(stage, args);
+      return orig.apply(this, args);
+    };
+  });
+  // Realign the filter overlay whenever fullscreen toggles.
+  document.addEventListener("fullscreenchange", () => renderCrt());
+  document.addEventListener("webkitfullscreenchange", () => renderCrt());
+}
+
+// ---- desktop keyboard shortcuts --------------------------------------------
+// Global, in-game-only remaps for a physical keyboard:
+//   F        toggle fullscreen (whole stage, so filters + aspect are preserved)
+//   Ctrl+.   save state    Ctrl+\   load state   (DOSBox-X engine only)
+// Never fire while a text field is focused, and keep the fullscreen request
+// synchronous inside the handler so it counts as a user gesture.
+function setupDesktopShortcuts() {
+  window.addEventListener("keydown", (e) => {
+    if (!gameCi) return;                                // only while a game is running
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+
+    if (e.ctrlKey && e.key === ".") {
+      if (getSetting("engine") !== "dosboxX") return;   // save states need DOSBox-X
+      if (!e.repeat) quickSaveState();                  // Ctrl+. — save state
+    } else if (e.ctrlKey && e.key === "\\") {
+      if (getSetting("engine") !== "dosboxX") return;   // save states need DOSBox-X
+      if (!e.repeat) quickLoadState();                  // Ctrl+\ — load state
+    } else if (!e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "f" || e.key === "F")) {
+      if (!e.repeat) toggleFullscreen();                // F — fullscreen (whole stage)
+    } else {
+      return;
+    }
+    e.preventDefault();
+  });
+}
+
 function setupSettings() {
   // Migrate legacy pogo-hold values that are no longer offered.
   const ph = getSetting("pogohold");
@@ -1957,6 +2026,8 @@ window.addEventListener("DOMContentLoaded", () => {
   setupRouting();
   setupSettings();
   setupDesktopPogo();
+  setupDesktopShortcuts();
+  setupFullscreen();
   setupTouchControls();
 
   // Best-effort capture if the tab is hidden/closed while playing.
