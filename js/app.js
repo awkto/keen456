@@ -999,12 +999,22 @@ function renderCrt() {
   if (!cv || !gameCanvas) return;
   // Soft/crisp pixels ride here too (live), so it combines with any overlay and
   // updates without relaunching — on mobile the filter dropdown drives it.
-  gameCanvas.style.imageRendering = getSetting("rendering");
+  const smooth = getSetting("rendering") === "smooth";
+  gameCanvas.style.imageRendering = smooth ? "smooth" : "pixelated";
   const def = FILTERS[getSetting("filter")];
   if (def && def.sample && crtRAF) return;     // sample loop already running & self-sizing
   crtStopSample();
-  // Colour-shift / blur ride on the game canvas's own CSS filter.
-  gameCanvas.style.filter = (def && def.css) || "";
+  // Colour-shift / blur ride on the game canvas's own CSS filter. On DOSBox-X the canvas
+  // is a high-res 640x400 buffer, so CSS bilinear alone is nearly invisible when upscaled
+  // — add a light blur so "Smooth" is actually soft (crisp stays pixel-sharp). Scale the
+  // blur to how big each source pixel is drawn (display / backing) so it looks the same at
+  // any window size: ~1px at 2x, less on smaller windows.
+  let soft = "";
+  if (smooth) {
+    const bw = gameCanvas.width || 1, dw = gameCanvas.getBoundingClientRect().width || bw;
+    soft = "blur(" + Math.max(0.4, Math.min(1.2, (dw / bw) * 0.5)).toFixed(2) + "px)";
+  }
+  gameCanvas.style.filter = [(def && def.css) || "", soft].filter(Boolean).join(" ");
   cv.style.mixBlendMode = (def && def.sample) ? "normal" : "multiply";
   if (!def) { cv.classList.remove("on"); return; }
   const size = crtSize(cv, gameCanvas);
