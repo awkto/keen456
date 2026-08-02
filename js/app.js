@@ -264,7 +264,9 @@ async function captureSave(key) {
 
 // ---- settings (persisted in localStorage) ----------------------------------
 
-const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto", engine: "dosbox", pogohold: "180", pogodesktop: "off", filter: "scanlines" };
+// NOTE: settings are per-device on purpose (localStorage, never uploaded) — only
+// the save snapshots sync, so a phone can run a lighter blur than the desktop.
+const SETTING_DEFAULTS = { aspect: "4/3", rendering: "pixelated", touch: "auto", engine: "dosbox", pogohold: "180", pogodesktop: "off", filter: "scanlines", smoothamt: "medium" };
 const getSetting = (k) => localStorage.getItem("keen." + k) || SETTING_DEFAULTS[k];
 const setSetting = (k, v) => localStorage.setItem("keen." + k, v);
 
@@ -919,6 +921,9 @@ const FILTERS = {
   amber:     { type: 1, scan: 0.42, mask: 0,    vig: 0.25, css: "grayscale(1) sepia(1) hue-rotate(-18deg) saturate(3.2) brightness(1.05)" },
   green:     { type: 1, scan: 0.42, mask: 0,    vig: 0.25, css: "grayscale(1) sepia(1) hue-rotate(72deg) saturate(2.6) brightness(1.04)" },
 };
+// "Smooth" blur intensity — a multiplier on the auto-scaled radius (see renderCrt).
+// medium == the original fixed amount, so existing installs look unchanged.
+const SMOOTH_SCALE = { light: 0.35, low: 0.6, medium: 1, high: 1.6 };
 let crtStop = null;     // resize/poll observer teardown
 let crtGL = null;       // { gl, buf, overlay, sample, tex }
 let crtRAF = 0;         // sampling render-loop handle
@@ -1027,10 +1032,14 @@ function renderCrt() {
   // — add a light blur so "Smooth" is actually soft (crisp stays pixel-sharp). Scale the
   // blur to how big each source pixel is drawn (display / backing) so it looks the same at
   // any window size: ~1px at 2x, less on smaller windows.
+  // The "Smooth blur" setting scales that baseline: phones draw each source pixel
+  // small, so the same radius reads as far mushier there — Light/Low let a device
+  // dial it back without us branching on mobile vs desktop.
   let soft = "";
   if (smooth) {
     const bw = gameCanvas.width || 1, dw = gameCanvas.getBoundingClientRect().width || bw;
-    soft = "blur(" + Math.max(0.4, Math.min(1.2, (dw / bw) * 0.5)).toFixed(2) + "px)";
+    const scale = SMOOTH_SCALE[getSetting("smoothamt")] ?? SMOOTH_SCALE.medium;
+    soft = "blur(" + (Math.max(0.4, Math.min(1.2, (dw / bw) * 0.5)) * scale).toFixed(2) + "px)";
   }
   gameCanvas.style.filter = [(def && def.css) || "", soft].filter(Boolean).join(" ");
   cv.style.mixBlendMode = (def && def.sample) ? "normal" : "multiply";
@@ -1908,21 +1917,23 @@ function setupSettings() {
     seg.querySelectorAll("button").forEach((b) => {
       b.addEventListener("click", () => {
         setSetting(key, b.dataset.value); paint();
-        if (key === "rendering") renderCrt();   // apply soft/crisp live to a running game
+        if (key === "rendering") { syncSmoothRow(); renderCrt(); }   // apply soft/crisp live to a running game
       });
     });
     paint();
   });
-  // Native selects — Aspect / Pogo auto-retract. (Filter -> setupFilterSelect.)
-  [["set-aspect", "aspect"], ["set-pogohold", "pogohold"]].forEach(([id, key]) => {
+  // Native selects — Aspect / Smooth blur / Pogo auto-retract. (Filter -> setupFilterSelect.)
+  [["set-aspect", "aspect"], ["set-smoothamt", "smoothamt"], ["set-pogohold", "pogohold"]].forEach(([id, key]) => {
     const sel = $(id);
     if (!sel) return;
     sel.value = getSetting(key);
     sel.addEventListener("change", () => {
       setSetting(key, sel.value);
       if (key === "pogohold") applyPogoHold();
+      if (key === "smoothamt") renderCrt();   // re-blur a running game immediately
     });
   });
+  syncSmoothRow();
   setupFilterSelect();
   // Checkbox — desktop pogo.
   const dp = $("set-pogodesktop");
@@ -1947,6 +1958,13 @@ function setupSettings() {
     });
     sb.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sb.blur(); } });
   }
+}
+
+// "Smooth blur" only means anything while smooth pixels are on — and on mobile
+// that's chosen from the filter dropdown, so both controls call this.
+function syncSmoothRow() {
+  const row = $("smoothamt-row");
+  if (row) row.hidden = getSetting("rendering") !== "smooth";
 }
 
 // The screen-filter <select>.
@@ -1997,6 +2015,7 @@ function setupFilterSelect() {
     } else {
       setSetting("filter", sel.value);
     }
+    syncSmoothRow();
     renderCrt();   // applies rendering + filter live if a game is running
   });
   mq.addEventListener("change", build);   // re-sync if the viewport crosses the breakpoint

@@ -233,6 +233,14 @@
                   <option value="amber">Amber — monochrome</option>
                 </select>
               </div>
+              <div class="set-row" id="smoothamt-row"><span class="set-label">Smooth blur</span>
+                <select id="set-smoothamt">
+                  <option value="light">Light — barely soft</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium (default)</option>
+                  <option value="high">High — very soft</option>
+                </select>
+              </div>
               <div class="set-row"><span class="set-label">Pogo auto-retract</span>
                 <select id="set-pogohold">
                   <option value="off">Off</option>
@@ -424,6 +432,6 @@
   <!-- Sets window.KEEN_SYNC_BASE before app.js. Empty on web (same-origin sync);
        the APK ships a copy pointing at a real server. Must load before app.js. -->
   <script src="js/sync-config.js?v=1"></script>
-  <script src="js/app.js?v=64"></script>
+  <script src="js/app.js?v=65"></script>
 </body>
 </html>
