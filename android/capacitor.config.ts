@@ -10,10 +10,10 @@ const config: CapacitorConfig = {
   server: {
     androidScheme: "https",
   },
-  android: {
-    // Route key events to the WebView so the emulator/keyboard get them (it's a game).
-    captureInput: true,
-  },
+  // No android.captureInput: it replaces the WebView's IME connection with a raw
+  // BaseInputConnection (no editable field), so the soft keyboard dismisses
+  // immediately / never opens and `beforeinput` never fires on the ⌨ proxy input.
+  // Hardware keys still reach the page as normal keydown events without it.
 };
 
 export default config;

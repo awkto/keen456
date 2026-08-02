@@ -811,7 +811,25 @@ function setupKeyboard() {
   };
   btn.addEventListener("pointerup", toggle);
   btn.addEventListener("contextmenu", (e) => e.preventDefault());
+  // On touch, synthetic compatibility mouse events (mousedown → focuses the
+  // button) fire AFTER pointerup — stealing focus from the just-focused proxy,
+  // which instantly hides the soft keyboard. preventDefault on touchstart
+  // suppresses them (mousedown too, so the button never grabs focus on desktop).
+  btn.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+  btn.addEventListener("mousedown", (e) => e.preventDefault());
   proxy.addEventListener("blur", () => btn.classList.remove("active"));
+
+  // Android back button hides the soft keyboard WITHOUT blurring the input, so
+  // the next ⌨ tap would blur instead of re-showing it. Detect the keyboard
+  // closing via the visual viewport growing back and drop focus to stay in sync.
+  if (window.visualViewport) {
+    let lastH = window.visualViewport.height;
+    window.visualViewport.addEventListener("resize", () => {
+      const h = window.visualViewport.height;
+      if (h > lastH + 100 && document.activeElement === proxy) proxy.blur();
+      lastH = h;
+    });
+  }
 
   // Printable characters: soft keyboards fire `beforeinput` (keydown is unreliable
   // on Android — it reports keyCode 229). Keep the field empty after each char.
