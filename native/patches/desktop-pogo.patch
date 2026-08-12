@@ -1,0 +1,94 @@
+diff --git a/src/gui/sdlmain.cpp b/src/gui/sdlmain.cpp
+index c654f88..23a4cab 100644
+--- a/src/gui/sdlmain.cpp
++++ b/src/gui/sdlmain.cpp
+@@ -5883,6 +5883,79 @@ bool eatRestoredWindow = false;
+ 
+ bool gfx_in_mapper = false;
+ 
++/* Keen desktop pogo (keen456/native): parity with the web build's
++   "pogo on desktop Alt" switch. Alt already gives Keen the pogo, so holding it
++   only needs Jump (Ctrl) injected ~30 ms later for the Pogo+Jump super-bounce,
++   and — when Alt was held past the threshold — one extra Alt tap on release to
++   retract the pogo again. Done inside the emulator because host-side synthetic
++   input (XTEST) trips Wayland's remote-desktop portal.
++   Enabled with KEEN_POGO=1; hold threshold in ms via KEEN_POGO_HOLD
++   (default 180, "off" disables the auto-retract tap). KEEN_POGO_DEBUG=1 logs
++   each injected key, which is the only way to see this working without
++   reading Keen's animation frame by frame. */
++#if defined(C_SDL2)
++#include "keyboard.h"
++static void Keen_DesktopPogoPoll(void) {
++    static int enabled = -1, holdMs = 180, debug = 0;
++    if (enabled < 0) {
++        const char *e = getenv("KEEN_POGO");
++        enabled = (e != NULL && *e == '1') ? 1 : 0;
++        const char *h = getenv("KEEN_POGO_HOLD");
++        if (h != NULL) {
++            if (!strcmp(h, "off")) holdMs = -1;
++            else { int v = atoi(h); if (v >= 0) holdMs = v; }
++        }
++        const char *d = getenv("KEEN_POGO_DEBUG");
++        debug = (d != NULL && *d == '1') ? 1 : 0;
++    }
++    if (!enabled) return;
++    const Uint8 *ks = SDL_GetKeyboardState(NULL);
++    const bool alt = ks[SDL_SCANCODE_LALT] != 0 || ks[SDL_SCANCODE_RALT] != 0;
++    static bool altWas = false, jumpDown = false, tapDown = false;
++    static uint32_t heldSince = 0, jumpAt = 0, tapPressAt = 0, tapReleaseAt = 0;
++    const uint32_t now = (uint32_t)GetTicks();
++
++    if (alt && !altWas) {                       /* Alt pressed */
++        heldSince = now;
++        jumpAt = now + 30u;                     /* staggered, like the web build */
++        /* A new press cancels a pending retract tap from the previous one. */
++        tapPressAt = tapReleaseAt = 0;
++        if (tapDown) { KEYBOARD_AddKey(KBD_leftalt, false); tapDown = false; }
++    } else if (!alt && altWas) {                /* Alt released */
++        if (jumpDown) { KEYBOARD_AddKey(KBD_leftctrl, false); jumpDown = false; }
++        jumpAt = 0;
++        if (holdMs >= 0 && heldSince != 0 && (now - heldSince) >= (uint32_t)holdMs) {
++            tapPressAt = now + 30u;
++            tapReleaseAt = now + 120u;
++            if (debug) LOG_MSG("Keen: pogo: alt held %u ms >= %d, scheduling retract tap",
++                               now - heldSince, holdMs);
++        } else if (debug) {
++            LOG_MSG("Keen: pogo: alt held %u ms < %d, no retract tap",
++                    heldSince ? now - heldSince : 0u, holdMs);
++        }
++        heldSince = 0;
++    }
++    altWas = alt;
++
++    if (alt && !jumpDown && jumpAt != 0 && (int32_t)(now - jumpAt) >= 0) {
++        KEYBOARD_AddKey(KBD_leftctrl, true);    /* Jump, held with Alt */
++        jumpDown = true;
++        if (debug) LOG_MSG("Keen: pogo: jump pressed (alt held)");
++    }
++    if (tapPressAt != 0 && (int32_t)(now - tapPressAt) >= 0) {
++        KEYBOARD_AddKey(KBD_leftalt, true);
++        tapDown = true;
++        tapPressAt = 0;
++        if (debug) LOG_MSG("Keen: pogo: retract tap, alt pressed");
++    }
++    if (tapDown && tapReleaseAt != 0 && (int32_t)(now - tapReleaseAt) >= 0) {
++        KEYBOARD_AddKey(KBD_leftalt, false);
++        tapDown = false;
++        tapReleaseAt = 0;
++    }
++}
++#endif
++
+ #if defined(MACOSX)
+ #define DB_POLLSKIP 3
+ #else
+@@ -5892,6 +5965,9 @@ bool gfx_in_mapper = false;
+ 
+ void GFX_Events() {
+     CheckMapperKeyboardLayout();
++#if defined(C_SDL2)
++    Keen_DesktopPogoPoll();
++#endif
+ #if defined(C_SDL2) /* SDL 2.x---------------------------------- */
+     //Don't poll too often. This can be heavy on the OS, especially Macs.
+     //In idle mode 3000-4000 polls are done per second without this check.

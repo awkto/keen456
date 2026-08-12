@@ -1,0 +1,59 @@
+diff --git a/src/gui/sdlmain.cpp b/src/gui/sdlmain.cpp
+index 23a4cab..4fe64f4 100644
+--- a/src/gui/sdlmain.cpp
++++ b/src/gui/sdlmain.cpp
+@@ -5954,6 +5954,46 @@ static void Keen_DesktopPogoPoll(void) {
+         tapReleaseAt = 0;
+     }
+ }
++
++/* Keen filter cycle (keen456/native): V cycles the glshader through the list
++   in KEEN_FILTERS (colon-separated glshader values, prepared by the launcher).
++   Runtime switch is the same code path as DOSBox-X's own "Select GLSL shader"
++   menu item: SetVal + LoadGLShader + forced redraw. Session-only — settings.ini
++   keeps the startup default. */
++std::string LoadGLShader(Section_prop * section);
++static void Keen_FilterCyclePoll(void) {
++    enum { KFC_MAX = 16 };
++    static std::string filters[KFC_MAX];
++    static int n = -1, cur = -1;
++    static bool vHeld = false;
++    if (n < 0) {
++        n = 0;
++        const char *e = getenv("KEEN_FILTERS");
++        std::string s = (e != NULL) ? e : "";
++        for (size_t p = 0; n < KFC_MAX && p <= s.size();) {
++            size_t q = s.find(':', p);
++            if (q == std::string::npos) q = s.size();
++            if (q > p) filters[n++] = s.substr(p, q - p);
++            p = q + 1;
++        }
++        Section_prop *sec = static_cast<Section_prop *>(control->GetSection("render"));
++        std::string curval = (std::string)sec->Get_path("glshader")->GetValue();
++        for (int i = 0; i < n; i++) if (filters[i] == curval) { cur = i; break; }
++    }
++    if (n < 2) return;
++    const Uint8 *ks = SDL_GetKeyboardState(NULL);
++    const bool v = ks[SDL_SCANCODE_V] != 0 &&
++        !ks[SDL_SCANCODE_LCTRL] && !ks[SDL_SCANCODE_RCTRL] &&
++        !ks[SDL_SCANCODE_LALT] && !ks[SDL_SCANCODE_RALT];
++    if (v && !vHeld) {
++        cur = (cur + 1) % n;
++        SetVal("render", "glshader", filters[cur]);
++        LoadGLShader(static_cast<Section_prop *>(control->GetSection("render")));
++        GFX_ForceRedrawScreen();
++        LOG_MSG("Keen: filter -> %s", filters[cur].c_str());
++    }
++    vHeld = v;
++}
+ #endif
+ 
+ #if defined(MACOSX)
+@@ -5967,6 +6007,7 @@ void GFX_Events() {
+     CheckMapperKeyboardLayout();
+ #if defined(C_SDL2)
+     Keen_DesktopPogoPoll();
++    Keen_FilterCyclePoll();
+ #endif
+ #if defined(C_SDL2) /* SDL 2.x---------------------------------- */
+     //Don't poll too often. This can be heavy on the OS, especially Macs.

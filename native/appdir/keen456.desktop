@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Commander Keen 4/5/6
+Comment=Commander Keen: Goodbye, Galaxy! / Aliens Ate My Babysitter! — native DOSBox-X build
+Exec=AppRun
+Icon=keen456
+Terminal=false
+Categories=Game;ArcadeGame;
+Actions=Keen4;Keen5;Keen6;
+
+[Desktop Action Keen4]
+Name=Keen 4 — Secret of the Oracle
+Exec=AppRun 4
+
+[Desktop Action Keen5]
+Name=Keen 5 — The Armageddon Machine
+Exec=AppRun 5
+
+[Desktop Action Keen6]
+Name=Keen 6 — Aliens Ate My Babysitter!
+Exec=AppRun 6

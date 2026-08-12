@@ -62,8 +62,17 @@ css/app.css        styling
 js/app.js          launch logic + in-browser .jsdos bundle builder
 js/fflate.min.js   vendored zip library (assembles bundles client-side)
 games/keen4.jsdos  prebuilt Keen 4 shareware bundle (redistributable)
+native/            native Linux build (DOSBox-X + Go launcher) — see native/README.md
 ROADMAP.md         Path 2: Omnispeak → WebAssembly (native engine port)
 ```
+
+## Native Linux build
+
+There is also a **native Linux build** — the same three episodes on a patched
+DOSBox-X with a Go launcher, shipped as a `.deb` (apt repo) and an AppImage, with
+save sync that cross-plays with this browser build. It lives in
+[`native/`](native/README.md) and is released from `native-v*` tags, separately
+from the `v*` container and `android-v*` APK releases.
 
 ## Self-hosting with Docker
 

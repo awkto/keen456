@@ -1,0 +1,90 @@
+name: Build Native Linux packages
+
+# Native (DOSBox-X) Linux build — see native/PLAN.md.
+# Tag `native-v*.*.*` to cut a release; manual dispatch for iteration.
+#
+# This repo also cuts `v*` tags (the web/server container) and `android-v*`
+# tags (the APK). Both this workflow and the apt publisher on pro must match
+# `native-v*` strictly, or a web release would try to publish a .deb that
+# does not exist.
+#
+# Produces two artifacts from one payload:
+#   keen456_<ver>_amd64.deb   the primary install path — picked up from the
+#                             GitHub release by linux-package-repo/publish.sh
+#                             and served from apt.pro.dnsif.ca
+#   Keen456-x86_64.AppImage   for non-Debian distros
+on:
+  push:
+    tags:
+      - 'native-v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # for softprops/action-gh-release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: native/launcher/go.mod
+
+      # DOSBox-X is compiled from source in a Debian 12 container (~15 min);
+      # cache the result keyed on the pinned version + build script + patches.
+      - name: Cache DOSBox-X build
+        uses: actions/cache@v4
+        with:
+          path: native/vendor/dosbox-x-*
+          key: dosbox-x-${{ hashFiles('native/build-dosbox-x.sh', 'native/patches/**') }}
+
+      # The Fyne GUI is compiled in a container too; cache its Go module and
+      # build caches so only the first run pays for the dependency tree.
+      - name: Cache GUI build
+        uses: actions/cache@v4
+        with:
+          path: native/vendor/gocache
+          key: keen456-gui-${{ hashFiles('native/gui/go.sum', 'native/gui/*.go', 'native/launcher/core/*.go') }}
+          restore-keys: keen456-gui-
+
+      # native-v1.0.0 -> 1.0.0. Manual runs have no tag, so build 0.0.0-dev
+      # as a plain smoke test that never gets published.
+      - name: Derive version from tag
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/native-v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/native-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build AppImage
+        run: ./native/build.sh
+
+      - name: Build Debian package
+        run: ./native/build-deb.sh "${{ steps.ver.outputs.version }}"
+
+      - name: Verify the package installs and resolves its libraries
+        run: ./native/test-deb.sh "native/dist/keen456_${{ steps.ver.outputs.version }}_amd64.deb"
+
+      - name: Upload artifacts (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: keen456-native
+          path: |
+            native/dist/Keen456-x86_64.AppImage
+            native/dist/*.deb
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/native-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            native/dist/Keen456-x86_64.AppImage
+            native/dist/keen456_${{ steps.ver.outputs.version }}_amd64.deb
+          generate_release_notes: true
