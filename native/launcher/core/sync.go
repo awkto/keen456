@@ -697,16 +697,18 @@ func (sy *Syncer) Status() SyncStatus {
 	return st
 }
 
-// BackupGameDir snapshots the current game dir before an irreversible
-// overwrite, and returns the file it wrote. Cheap insurance: the whole
-// directory is about a megabyte.
-func (sy *Syncer) BackupGameDir(tag string) (string, error) {
-	// A plain archive of the game dir — deliberately NOT built through
-	// zipBundle, which needs the js-dos metadata and a detectable executable.
-	// A backup must not be able to fail because of a missing file that has
-	// nothing to do with the save; the whole point is that it runs immediately
-	// before something irreversible.
-	blob, err := zipGameDir(sy.gameDir)
+// BackupGameDir snapshots a game directory before an irreversible overwrite,
+// and returns the file it wrote. Cheap insurance: the whole directory is about
+// a megabyte.
+//
+// It is a plain function, not a Syncer method, because backing up is not a
+// sync operation: `keen456 saves backup` must work on a machine that has never
+// heard of a sync server. (It is also deliberately NOT built through
+// zipBundle, which needs the js-dos metadata and a detectable executable — a
+// backup must not be able to fail because of a missing file that has nothing
+// to do with the save.)
+func BackupGameDir(gameDir, slot, tag string) (string, error) {
+	blob, err := zipGameDir(gameDir)
 	if err != nil {
 		return "", err
 	}
@@ -715,11 +717,16 @@ func (sy *Syncer) BackupGameDir(tag string) (string, error) {
 		return "", err
 	}
 	p := filepath.Join(dir, fmt.Sprintf("%s-%s-%s.zip",
-		sy.slot, tag, time.Now().Format("20060102-150405")))
+		slot, tag, time.Now().Format("20060102-150405")))
 	if err := os.WriteFile(p, blob, 0o644); err != nil {
 		return "", err
 	}
 	return p, nil
+}
+
+// BackupGameDir snapshots the directory this syncer is about to overwrite.
+func (sy *Syncer) BackupGameDir(tag string) (string, error) {
+	return BackupGameDir(sy.gameDir, sy.slot, tag)
 }
 
 // AdoptCloud takes the server's save for this key+episode, after backing up

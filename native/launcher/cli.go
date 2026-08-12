@@ -435,7 +435,13 @@ func setSync(on bool) {
 func syncKey(args []string) {
 	s := core.Load()
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Printf("%s\n", syncerFor(core.Episodes[0]).Key())
+		// The key is local — settings.ini or the sync-key file — so showing it
+		// must not need a server to be configured.
+		k, err := core.ResolveSyncKey(s)
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Printf("%s\n", k)
 		return
 	}
 	k := core.NormalizeSyncKey(args[0])
@@ -462,8 +468,12 @@ func syncKey(args []string) {
 
 func forgetKey(deleteRemote, yes bool) {
 	s := core.Load()
-	sy := syncerFor(core.Episodes[0])
-	key := sy.Key()
+	// Disconnecting is local: it must work even when the server this device
+	// was pointed at is gone or was never set. Only --delete-remote needs one.
+	key, err := core.ResolveSyncKey(s)
+	if err != nil {
+		fatal(err)
+	}
 	if deleteRemote {
 		if !yes && !confirm(fmt.Sprintf(
 			"Delete the saves stored on the server under key %s, for all three "+
@@ -563,11 +573,17 @@ func listSaves(s core.Settings, ep core.Episode, dir string) {
 
 func backupSaves(ep core.Episode, dir string) {
 	header(ep)
+	if dir == "" {
+		fmt.Printf("No game files configured — `keen456 %d --game-files DIR`\n\n", ep.Num)
+		return
+	}
 	if names, _ := core.SaveFiles(dir, ep); len(names) == 0 {
 		fmt.Println("Nothing to back up — no in-game saves on this computer.")
 		return
 	}
-	p, err := syncerFor(ep).BackupGameDir("manual")
+	// Deliberately not routed through a Syncer: backing up is local, and must
+	// work on a machine with no sync server configured.
+	p, err := core.BackupGameDir(dir, ep.ID, "manual")
 	if err != nil {
 		fatal(err)
 	}
