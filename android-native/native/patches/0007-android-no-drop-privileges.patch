@@ -1,0 +1,54 @@
+diff --git a/src/libs/passthroughio/passthroughio.cpp b/src/libs/passthroughio/passthroughio.cpp
+index a2f7d15..0a9bb00 100644
+--- a/src/libs/passthroughio/passthroughio.cpp
++++ b/src/libs/passthroughio/passthroughio.cpp
+@@ -478,6 +478,16 @@ bool initPassthroughIO(void) {
+ }
+ 
+ bool dropPrivileges(void) {
++#if defined(__ANDROID__)
++	/* Android: there are no privileges to drop (the app never runs setuid root),
++	   and the attempt is fatal. Bionic implements setgid()/setuid() with the
++	   setresgid/setresuid syscalls, which Android's seccomp filter denies for app
++	   processes — the kernel answers with SIGSYS and the process dies before the
++	   emulator ever draws a frame. Upstream already excludes Android from the
++	   matching iopl() block in initPassthroughIO() above; these three functions
++	   were simply missed because nothing but Android calls them without root. */
++	return true;
++#else
+ 	regainPrivileges();                         // The saved UID and GID must be changed too.
+ 
+ 	gid_t gid = getgid();
+@@ -491,9 +501,13 @@ bool dropPrivileges(void) {
+ 		return false;
+ 	}
+ 	return true;
++#endif
+ }
+ 
+ bool dropPrivilegesTemp(void) {
++#if defined(__ANDROID__)
++	return true;                                /* see dropPrivileges() */
++#else
+ 	gid_t gid = getgid();
+ 	if(setegid(gid) == -1) {
+ 		LOG_MSG("Error: Could not set effective GID to %u.", gid);
+@@ -505,13 +519,18 @@ bool dropPrivilegesTemp(void) {
+ 		return false;
+ 	}
+ 	return true;
++#endif
+ }
+ 
+ bool regainPrivileges(void) {
++#if defined(__ANDROID__)
++	return true;                                /* see dropPrivileges() */
++#else
+ 	if(seteuid((uid_t)0) == -1) {
+ //		LOG_MSG("Error: Could not set effective UID to 0.");
+ 		return false;
+ 	}
+ 	return true;
++#endif
+ }
+ #endif

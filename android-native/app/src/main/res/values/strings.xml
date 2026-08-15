@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- "Native" distinguishes this from the WASM/WebView app, which keeps the
+         "Commander Keen 4·5·6" name — the two are parallel tracks installed
+         side by side (see README.md). -->
+    <string name="app_name">Keen 4·5·6 Native</string>
+</resources>

@@ -1,0 +1,57 @@
+--- a/vs/sdl2/src/render/SDL_render.c
++++ b/vs/sdl2/src/render/SDL_render.c
+@@ -698,6 +698,19 @@
+              */
+             if (event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                 event->window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED) {
++#ifdef __ANDROID__
++                /* DOSBox-X Android: do nothing. This watch runs on whatever
++                   thread pushed the event — for surface changes that is the
++                   Java UI thread (SDLSurface.surfaceChanged -> onNativeResize)
++                   — and both the viewport fields and QueueCmdSetViewport's
++                   command list belong to the emulator thread; mutating them
++                   here is a data race that intermittently left a stale GL
++                   viewport (picture shifted up after an app switch). The
++                   present path (SDL_UpdateWindowTexture in SDL_video.c)
++                   re-asserts the full-output viewport every frame from the
++                   owning thread instead, which also covers real size changes
++                   like the fullscreen-setting toggle. */
++#else
+                 /* Make sure we're operating on the default render target */
+                 SDL_Texture *saved_target = SDL_GetRenderTarget(renderer);
+                 if (saved_target) {
+@@ -750,6 +763,7 @@
+                 if (saved_target) {
+                     SDL_SetRenderTarget(renderer, saved_target);
+                 }
++#endif /* !__ANDROID__ */
+             } else if (event->window.event == SDL_WINDOWEVENT_HIDDEN) {
+                 renderer->hidden = SDL_TRUE;
+             } else if (event->window.event == SDL_WINDOWEVENT_SHOWN) {
+--- a/vs/sdl2/src/video/SDL_video.c
++++ b/vs/sdl2/src/video/SDL_video.c
+@@ -503,6 +503,24 @@
+             SDL_Rect srcrect;
+             SDL_Rect *srcp = NULL;
+             SDL_GetRendererOutputSize(data->renderer, &ow, &oh);
++            /* Re-assert the full-output viewport every present, from this
++               thread (the queue's owner). Android's SDLSurface.surfaceChanged
++               runs on the Java UI thread and lands in SDL_RendererEventWatch,
++               which used to reset the viewport and queue its SETVIEWPORT
++               command from that foreign thread, racing this one; a lost race
++               left the GL viewport at a stale size — the picture drawn shifted
++               up / cut off after an app switch — and QueueCmdSetViewport's
++               dedup (last_queued_viewport already holds the right numbers)
++               ensured it was never sent again. The 1x1 detour defeats that
++               dedup so the command is genuinely queued and executed each
++               frame; the cost is two tiny commands per present. The foreign-
++               thread half of the race is disabled in SDL_render.c (same
++               patch). */
++            {
++                SDL_Rect vp_poke = { 0, 0, 1, 1 };
++                SDL_RenderSetViewport(data->renderer, &vp_poke);
++                SDL_RenderSetViewport(data->renderer, NULL);
++            }
+             if (ow > 0 && oh > 0 && w > 0 && h > 0) {
+                 /* display aspect if DOSBox-X supplied one, else pixel aspect */
+                 float sar = (dbx_content_aspect > 0.0)

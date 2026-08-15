@@ -1,0 +1,136 @@
+diff --git a/src/gui/sdlmain.cpp b/src/gui/sdlmain.cpp
+index c654f88..dab1481 100644
+--- a/src/gui/sdlmain.cpp
++++ b/src/gui/sdlmain.cpp
+@@ -1116,6 +1116,34 @@ bool IsDebuggerActive(void);
+ 
+ extern std::string dosbox_title;
+ 
++#if defined(__ANDROID__)
++#include <jni.h>
++/* DOSBox-X's status line (incl. "FPS nn, nn%/RT" when showdetails=true) would go
++   in the window title; on Android there is no title bar, so cache it here for the
++   Java side to read as a debug/FPS readout. */
++char android_status_line[256] = {0};
++extern "C" JNIEXPORT jstring JNICALL
++Java_com_awkto_keen456_Native_nativeStatusLine(JNIEnv *env, jclass clazz) {
++    (void)clazz;
++    return env->NewStringUTF(android_status_line);
++}
++/* Keen: set a process environment variable from Kotlin before the emulator
++   thread reads it. This is how the launcher hands the in-emulator features their
++   settings (KEEN_POGO / KEEN_POGO_HOLD, consumed by Keen_DesktopPogoPoll)
++   without a config-file round trip — on desktop the Go launcher exports these
++   into the child process, which Android has no equivalent of. Must be called
++   before SDL_main starts (i.e. from Activity.onCreate, after loadLibraries). */
++extern "C" JNIEXPORT void JNICALL
++Java_com_awkto_keen456_Native_nativeSetEnv(JNIEnv *env, jclass clazz, jstring jk, jstring jv) {
++    (void)clazz;
++    const char *k = env->GetStringUTFChars(jk, NULL);
++    const char *v = env->GetStringUTFChars(jv, NULL);
++    if (k != NULL && v != NULL) setenv(k, v, 1);
++    if (k != NULL) env->ReleaseStringUTFChars(jk, k);
++    if (v != NULL) env->ReleaseStringUTFChars(jv, v);
++}
++#endif
++
+ void GFX_SetTitle(int32_t cycles, int frameskip, Bits timing, bool paused) {
+     (void)frameskip;//UNUSED
+     (void)timing;//UNUSED
+@@ -1186,6 +1214,11 @@ void GFX_SetTitle(int32_t cycles, int frameskip, Bits timing, bool paused) {
+ #if C_DEBUG
+     if (IsDebuggerActive()) strcat(title," DEBUGGER");
+ #endif
++#if defined(__ANDROID__)
++    /* expose the finished status line to the Java FPS overlay */
++    strncpy(android_status_line, title, sizeof(android_status_line)-1);
++    android_status_line[sizeof(android_status_line)-1] = 0;
++#endif
+ #if defined(C_SDL2)
+     SDL_SetWindowTitle(sdl.window,title);
+ #else
+@@ -1791,6 +1824,19 @@ SDL_Window* GFX_GetSDLWindow(void) {
+ SDL_Window* GFX_SetSDLWindowMode(uint16_t width, uint16_t height, SCREEN_TYPES screenType)
+ {
+     static SCREEN_TYPES lastType = SCREEN_SURFACE;
++#if defined(__ANDROID__)
++    /* The Android SDL window is always the full display; keep the window/renderer
++       (and thus the GL viewport) at display size. The small DOS framebuffer is
++       handled as a content-sized texture scaled on the GPU (see output_surface +
++       SDL_DBX_SetContentSize), not by shrinking the window. */
++    {
++        SDL_DisplayMode dm;
++        if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
++            width = (uint16_t)dm.w;
++            height = (uint16_t)dm.h;
++        }
++    }
++#endif
+     if (sdl.renderer) {
+         SDL_DestroyRenderer(sdl.renderer);
+         sdl.renderer = nullptr;
+@@ -8641,6 +8687,14 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
+     int workdirsave = 0;
+     std::string workdirsaveas = "";
+ 
++#if defined(__ANDROID__)
++    /* Android has no interactive folder picker (no zenity/kdialog; tinyfd would
++       shell out and hang at 100% CPU when isatty(0)==false and cwd=="/", both
++       true on Android). Never prompt. All prompt logic below is gated on
++       opt_promptfolder < 0, so forcing 0 here disables it entirely. */
++    control->opt_promptfolder = 0;
++#endif
++
+ #if defined(MACOSX) || defined(LINUX) || (defined(WIN32) && !defined(HX_DOS))
+     {
+         if(control->opt_promptfolder < 0) {
+@@ -9358,8 +9412,11 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
+         else {
+             const char* env_driver = getenv("SDL_VIDEODRIVER");
+             if(!env_driver || !*env_driver) {
+-#if defined(LINUX)
++#if defined(LINUX) && !defined(__ANDROID__)
+                 putenv("SDL_VIDEODRIVER=x11"); // default to x11 (xwayland) on Linux
++#elif defined(__ANDROID__)
++                /* let SDL auto-pick its "android" video driver; forcing x11 here
++                   makes SDL_Init fail with "x11 not available" */
+ #elif defined(WIN32)
+                 /* hack: Encourage SDL to use windib if not otherwise specified */
+ #if defined(C_SDL2)
+@@ -9567,6 +9624,36 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
+         }
+ #endif
+ 
++#if defined(__ANDROID__)
++        /* Load the launcher-written config from app-external storage. The workdir
++           logic above calls control->ClearExtraData(), which wipes every section's
++           data (including [autoexec]); parse our conf here, right before
++           GUI_StartUp, so the launcher's "mount c ... / run game" autoexec
++           actually executes instead of dropping to a bare Z:\> prompt. */
++        {
++            /* External storage first (user-reachable, so saves/logs can be pulled
++               off the device), then internal — getExternalFilesDir() returns null
++               when external storage is unmounted, and the app falls back to
++               filesDir in that case, so look in both. */
++            const char *paths[2] = { SDL_AndroidGetExternalStoragePath(),
++                                     SDL_AndroidGetInternalStoragePath() };
++            bool loaded = false;
++            for (int i = 0; i < 2 && !loaded; i++) {
++                if (paths[i] == NULL) continue;
++                std::string androidconf = std::string(paths[i]) + "/dosbox-x.conf";
++                struct stat ast;
++                if (stat(androidconf.c_str(), &ast) == 0 && S_ISREG(ast.st_mode)) {
++                    LOG_MSG("ANDROID: loading launcher config %s", androidconf.c_str());
++                    control->ParseConfigFile(androidconf.c_str());
++                    loaded = true;
++                }
++            }
++            if (!loaded)
++                LOG_MSG("ANDROID: no launcher config found (external=%s internal=%s)",
++                        paths[0] ? paths[0] : "(null)", paths[1] ? paths[1] : "(null)");
++        }
++#endif
++
+         /* GUI init */
+         GUI_StartUp();
+ 

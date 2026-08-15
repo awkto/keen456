@@ -1,0 +1,61 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    // JNI symbol names in patches 0003/0006 derive from this namespace
+    // (Java_com_awkto_keen456_Native_*) — do not change one without the other.
+    namespace 'com.awkto.keen456'
+    compileSdk 34
+
+    defaultConfig {
+        // NOT the Capacitor APK's id (com.awkto.keen456): the WASM and native
+        // builds are parallel tracks, developed and shipped independently, so
+        // they must install side by side on one device. ".dx" for DOSBox-X.
+        applicationId 'com.awkto.keen456.dx'
+        // minSdk MUST equal DBX_API in native/build-android.sh — the native libs
+        // are compiled against that API level's bionic.
+        minSdk 28
+        targetSdk 34
+        versionCode project.hasProperty('keenVersionCode') ? keenVersionCode.toInteger() : 1
+        versionName project.hasProperty('keenVersionName') ? keenVersionName : '1.0.0-dev'
+        ndk {
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    // GameSetup stamps the installed game with BuildConfig.VERSION_CODE so an
+    // app update re-extracts it. AGP 8 turns BuildConfig off by default.
+    buildFeatures {
+        buildConfig true
+    }
+
+    // The native libs are prebuilt by native/build-android.sh into
+    // src/main/jniLibs/<abi>/. Keep them extracted on disk: SDL's loader and
+    // dlopen() need to find libmain.so by path.
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+}
