@@ -1,0 +1,20 @@
+diff --git a/src/hardware/vga_draw.cpp b/src/hardware/vga_draw.cpp
+index b8335f6..47600ee 100644
+--- a/src/hardware/vga_draw.cpp
++++ b/src/hardware/vga_draw.cpp
+@@ -6046,7 +6046,14 @@ static void VGA_VerticalTimer(Bitu /*val*/) {
+ 	/* compensate for floating point drift, make sure we're keeping the frame rate.
+ 	 * be very gentle about it. generally the drift is very small, and large adjustments can cause
+ 	 * DOS games dependent on vsync to fail/hang. */
+-	double shouldbe = (((double)vga_mode_frames_since_time_base * 1000.0) / vga_fps) + vga_mode_time_base;
++	/* Under manual vsync ([vsync] vsyncmode=on) frames are scheduled at the
++	 * user's vsyncrate, not the video mode's native rate, so the drift target
++	 * must be that rate too. Against vga_fps the error grows without bound and
++	 * this correction saturates at -0.1ms every frame, skewing the manual rate
++	 * (60Hz becomes ~60.4Hz — visible as a periodic frame drop on a 60Hz
++	 * display, the thing manual vsync is used to avoid). */
++	double vga_fps_target = vsync.manual ? (1000.0 / vsync.period) : vga_fps;
++	double shouldbe = (((double)vga_mode_frames_since_time_base * 1000.0) / vga_fps_target) + vga_mode_time_base;
+ 	double vsync_err = shouldbe - current_time; /* < 0 too slow     > 0 too fast */
+ 	double vsync_adj = vsync_err * 0.25;
+ 	if (vsync_adj < -0.1) vsync_adj = -0.1;

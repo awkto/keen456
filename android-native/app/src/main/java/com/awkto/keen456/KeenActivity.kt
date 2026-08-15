@@ -126,6 +126,13 @@ class KeenActivity : SDLActivity() {
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        // The emulator renders at exactly 60fps (the conf template's [vsync]
+        // section pins the emulated vertical timer there). Declare that so the
+        // system picks a display mode 60 divides evenly — on 60/120Hz panels
+        // this changes nothing, on 90Hz panels it switches to the 60Hz mode
+        // instead of showing 60fps content on a 90Hz cadence (2:1:2 judder).
+        window.attributes = window.attributes.apply { preferredRefreshRate = 60f }
+
         val fillParent = {
             ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,

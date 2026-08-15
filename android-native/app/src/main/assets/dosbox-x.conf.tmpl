@@ -40,6 +40,21 @@ aspect=false
 # pixels setting bites (SDL_RENDER_SCALE_QUALITY, Settings ▸ Pixels).
 scaler=none
 
+[vsync]
+# The mode Keen runs in is ~70.09Hz on real VGA, but phone displays are 60Hz
+# (or a multiple). Left at 70, DOSBox-X pushes 70 frames/s at a display that
+# shows 60 — a frame is dropped every ~100ms (visible judder in scrolling) and
+# the excess presents back-pressure the emulation thread through the display's
+# buffer queue, which jitters game timing on top. The wasm app never feels
+# this because the browser compositor vsync-paces its canvas. Forcing the
+# emulated vertical timer to 60Hz makes frame generation match the display
+# 1:1: every present lands on its own refresh. Game speed is unaffected —
+# Keen's logic runs off the PIT timer and adapts tics per frame. Patch 0009
+# keeps the drift compensator honest at the forced rate; KeenActivity asks
+# Android for a 60Hz-compatible display mode to cover 90Hz panels.
+vsyncmode=on
+vsyncrate=60
+
 [log]
 # Written unbuffered, so it survives a crash or a kill. This is the file to ask
 # for when diagnosing a device: Android/data/com.awkto.keen456.dx/files/last-run.log
