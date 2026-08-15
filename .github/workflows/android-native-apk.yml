@@ -1,0 +1,190 @@
+name: Build Android APK (native)
+
+# The native Android build: the patched DOSBox-X cross-compiled with the NDK,
+# under a Kotlin app with an episode picker and on-screen controls
+# ("Keen 4·5·6 Native", com.awkto.keen456.dx). A parallel track to the
+# Capacitor/WASM APK (android-apk.yml, which keeps the `android-v*` tags) —
+# this one ships under its own `android-native-v*` tag family so the two
+# pipelines never race.
+on:
+  push:
+    tags:
+      - 'android-native-v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # for softprops/action-gh-release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK + NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: >-
+            platforms;android-34
+            build-tools;34.0.0
+            platform-tools
+            cmake;3.22.1
+            ndk;27.2.12479018
+
+      - name: Install autotools (DOSBox-X uses autoconf)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq autoconf automake libtool nasm unzip
+
+      # The native core is a pure function of the pinned DOSBox-X tag, the patch
+      # set and the build script — so cache it on exactly those. A patch edit
+      # changes the key and forces a real rebuild (~20 min); nothing else does.
+      # The shared desktop-pogo.patch is part of the key: it is applied into
+      # libmain.so like the android patches.
+      - name: Cache native core
+        id: native-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            android-native/app/src/main/jniLibs
+            android-native/app/src/main/java/org/libsdl/app
+          key: keen456-android-native-${{ hashFiles('android-native/native/build-android.sh', 'android-native/native/patches/*.patch', 'native/patches/desktop-pogo.patch') }}
+
+      - name: Build native core (DOSBox-X -> libmain.so)
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        working-directory: android-native
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.2.12479018
+        run: ./native/build-android.sh
+
+      - name: Unpack the game into assets
+        working-directory: android-native
+        run: ./build-assets.sh
+
+      - name: Decode signing keystore
+        id: keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keen456-release.keystore"
+            echo "file=$RUNNER_TEMP/keen456-release.keystore" >> "$GITHUB_OUTPUT"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "Keystore decoded — building a signed release APK."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret — falling back to an unsigned debug APK."
+          fi
+
+      - name: Assemble APK
+        id: assemble
+        working-directory: android-native
+        env:
+          KEYSTORE_FILE: ${{ steps.keystore.outputs.file }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/android-native-v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/android-native-v}
+          else
+            VERSION="dev-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # versionCode is derived from the semver tag (major*10000 + minor*100 +
+          # patch), NOT the run number: a run-number code from a fresh workflow
+          # reads as a downgrade next to any prior install, Android refuses the
+          # update, and reinstalling deletes the saves in Android/data. (Learned
+          # the hard way on zeliard.) versionName = the tag. Signing is injected
+          # via gradle props so build.gradle carries no keystore config at all.
+          if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            VCODE=$(( ${BASH_REMATCH[1]}*10000 + ${BASH_REMATCH[2]}*100 + ${BASH_REMATCH[3]} ))
+          else
+            VCODE=$(( 90000 + GITHUB_RUN_NUMBER ))   # untagged dev build: above any release
+          fi
+          if [ "${{ steps.keystore.outputs.present }}" = "true" ]; then
+            ./gradlew --no-daemon assembleRelease \
+              -Pandroid.injected.signing.store.file="$KEYSTORE_FILE" \
+              -Pandroid.injected.signing.store.password="$ANDROID_KEYSTORE_PASSWORD" \
+              -Pandroid.injected.signing.key.alias="$ANDROID_KEY_ALIAS" \
+              -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD" \
+              -PkeenVersionCode="$VCODE" \
+              -PkeenVersionName="$VERSION"
+            echo "apk=app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_OUTPUT"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            ./gradlew --no-daemon assembleDebug \
+              -PkeenVersionCode="$VCODE" \
+              -PkeenVersionName="$VERSION"
+            echo "apk=app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_OUTPUT"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Same licensing gate as native/test-deb.sh: only Keen 4 shareware may
+      # ship. Fail the build if any Keen 5/6 content lands in the APK — that
+      # would mean redistributing commercial game data.
+      - name: Licensing gate — no Keen 5/6 content in the APK
+        working-directory: android-native
+        run: |
+          LEAK=$(unzip -l "${{ steps.assemble.outputs.apk }}" \
+            | awk '{print $4}' \
+            | grep -iE '\.CK[56]$|KEEN[56][A-Z0-9]*\.EXE$' || true)
+          if [ -n "$LEAK" ]; then
+            echo "::error::Commercial Keen 5/6 files found in the APK:"
+            echo "$LEAK"
+            exit 1
+          fi
+          echo "Clean — only Keen 4 shareware is bundled."
+
+      - name: Package APK with version
+        id: apk
+        run: |
+          VERSION="${{ steps.assemble.outputs.version }}"
+          if [ "${{ steps.assemble.outputs.signed }}" = "true" ]; then
+            DEST="keen456-native-${VERSION}.apk"
+          else
+            DEST="keen456-native-${VERSION}-debug.apk"
+          fi
+          cp "android-native/${{ steps.assemble.outputs.apk }}" "$DEST"
+          echo "path=$DEST" >> "$GITHUB_OUTPUT"
+          echo "name=${DEST%.apk}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+
+      - name: Attach APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/android-native-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.apk.outputs.path }}
+          generate_release_notes: true
+          body: |
+            ## Commander Keen 4·5·6 for Android — native build
+
+            Runs the real DOSBox-X compiled for Android (arm64 + x86_64) instead
+            of the emulator-in-a-WebView. Same game files and same emulator
+            patches as the desktop build, with an episode picker and on-screen
+            controls drawn natively. Installs side by side with the regular
+            Keen 4·5·6 app.
+
+            Keen 4 shareware plays out of the box; import your own Keen 5/6
+            game files from the picker (or fetch them via save sync).
+
+            1. On your phone, open the APK link below and tap **Download**.
+            2. Open the downloaded file. If Android asks, allow "install unknown apps" for your browser once.
+            3. Tap **Install**.
+
+            Signed with the stable keen456 release key, so it upgrades an
+            earlier release-signed install in place.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
