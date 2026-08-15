@@ -1,4 +1,4 @@
-package com.awkto.zeliard
+package com.awkto.keen456
 
 import android.content.pm.ActivityInfo
 import android.os.Build
@@ -11,15 +11,23 @@ import java.io.File
 import org.libsdl.app.SDLActivity
 
 /**
- * The whole app: DOSBox-X (as libmain.so) running Zeliard, with the touch
- * controls stacked on top of SDL's surface.
+ * The emulator screen: DOSBox-X (as libmain.so) running one episode, with the
+ * touch controls stacked on top of SDL's surface.
  *
- * There is no launcher, no game list and no menu — this build exists to boot one
- * game, so onCreate installs the game if needed, writes the config the emulator
- * reads, and lets SDLActivity take it from there.
+ * Launched by PickerActivity with the episode id in EXTRA_EPISODE, and runs in
+ * its own `:game` process (see the manifest): SDL_main can only run once per
+ * process, so a fresh process per session is what lets the player go back to
+ * the picker and start another episode. onCreate installs/validates the game
+ * files, writes the config the emulator reads, and lets SDLActivity take it
+ * from there.
  */
-class ZeliardActivity : SDLActivity() {
+class KeenActivity : SDLActivity() {
 
+    companion object {
+        const val EXTRA_EPISODE = "episode"
+    }
+
+    private lateinit var episode: Episode
     private var overlay: TouchOverlayView? = null
     private var filterView: FilterOverlayView? = null
 
@@ -67,14 +75,27 @@ class ZeliardActivity : SDLActivity() {
      * created, which is after onCreate returns.
      */
     override fun onCreate(savedInstanceState: Bundle?) {
-        GameSetup.prepare(this)
-        sync = SaveSync(this)
+        episode = Episodes.byId(intent.getStringExtra(EXTRA_EPISODE) ?: "keen4")
+            ?: Episodes.ALL.first()
+        val err = GameSetup.prepare(this, episode)
+        if (err != null) {
+            // The picker gates on files being present, so this only happens if
+            // they vanished between then and now.
+            android.widget.Toast.makeText(this, err, android.widget.Toast.LENGTH_LONG).show()
+            finish()
+            super.onCreate(savedInstanceState)
+            return
+        }
+        val prefs = getSharedPreferences("keen456", MODE_PRIVATE)
+        prefs.edit().putString("lastEpisode", episode.id).apply()
+
+        sync = SaveSync(this, episode)
         if (sync.enabled) {
-            // Launch pull, async: DOSBox-X spends the next several seconds in
-            // the boot/intro, and Zeliard only reads .USR files when the player
-            // opens the load screen, so a pull that lands mid-boot is safe.
-            // First contact with an existing cloud save is never auto-resolved
-            // — surface it instead (⚙ ▸ Sync has the choice buttons).
+            // Launch pull, async: DOSBox-X spends the next several seconds
+            // booting, and Keen only reads SAVEGAM files when the player opens
+            // the load menu, so a pull that lands mid-boot is safe. First
+            // contact with an existing cloud save is never auto-resolved —
+            // surface it instead (⚙ ▸ Sync has the choice buttons).
             syncExec.execute {
                 val pulled = sync.pull()
                 val decision = sync.pendingDecision()
@@ -89,32 +110,21 @@ class ZeliardActivity : SDLActivity() {
         syncHandler.postDelayed(periodicPush, 2 * 60_000L)
         super.onCreate(savedInstanceState)
 
-        // Hand the in-emulator attack-keys code its settings. Desktop passes
-        // these through the environment of the DOSBox-X child process; here there
-        // is only one process, so poke them straight in (see Native.nativeSetEnv).
-        Native.nativeSetEnv("ZELIARD_ATK", "1")
-        Native.nativeSetEnv("ZELIARD_AUTOFIRE", "10")
-        // Fast-forward runs at CPU_CycleMax * pct/100 for the duration of the
-        // hold: with the tick limiter off, cheaper emulated milliseconds mean
-        // a proportionally faster fast-forward on a host-bound phone. 67 was
-        // asked for as "~50% faster" (#42). Android-only — desktop launchers
-        // don't set this, so their FF speed is unchanged.
-        Native.nativeSetEnv("ZELIARD_FF_CYCLES_PCT", "67")
+        // Hand the in-emulator pogo code its settings. Desktop passes these
+        // through the environment of the DOSBox-X child process; here there is
+        // only one process, so poke them straight in (see Native.nativeSetEnv).
+        // The POGO button holds Alt; the patch injects the staggered Jump and
+        // the auto-retract tap, same behaviour and timing as desktop/web.
+        Native.nativeSetEnv("KEEN_POGO", "1")
+        Native.nativeSetEnv("KEEN_POGO_HOLD", prefs.getString("pogohold", "180") ?: "180")
 
         // Soft/sharp pixels for the GPU upscale ("1" = linear, "0" = nearest).
         // Applied at the next present (patch 0006 recreates the frame texture),
-        // so it also switches live from the settings dialog.
-        val prefs = getSharedPreferences("zeliard", MODE_PRIVATE)
-        Native.nativeSetScaleLinear(if (prefs.getString("pixels", "smooth") == "crisp") 0 else 1)
+        // so it also switches live from the settings dialog. Default crisp, as
+        // on the web (SETTING_DEFAULTS.rendering = pixelated).
+        Native.nativeSetScaleLinear(if (prefs.getString("pixels", "crisp") == "crisp") 0 else 1)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
-        // Border crop (the Z button) persists across launches. The native side
-        // (a src rect on SDL's GPU blit, patch 0006) and the overlay's layout
-        // both follow this one flag; Native.setZoom only pokes doubles, so
-        // calling it before the SDL thread starts is fine.
-        val zoom = prefs.getBoolean("zoom", false)
-        Native.setZoom(zoom)
 
         val fillParent = {
             ViewGroup.LayoutParams(
@@ -123,19 +133,12 @@ class ZeliardActivity : SDLActivity() {
             )
         }
         // The filter goes on before the controls, so the control pad (and the
-        // Save/Load popup) always draw above it.
+        // Save/Load popup) always draw above it. Default scanlines, as on web.
         filterView = FilterOverlayView(this).also { fv ->
-            fv.zoomed = zoom
             fv.filter = prefs.getString("filter", "scanlines") ?: "scanlines"
             addContentView(fv, fillParent())
         }
         overlay = TouchOverlayView(this).also { ov ->
-            ov.zoomed = zoom
-            ov.onZoomChanged = { z ->
-                Native.setZoom(z)
-                filterView?.zoomed = z
-                prefs.edit().putBoolean("zoom", z).apply()
-            }
             ov.onOpenSettings = { showSettings(prefs) }
             ov.onToggleKeyboard = { toggleKeyboard() }
             addContentView(ov, fillParent())
@@ -144,35 +147,38 @@ class ZeliardActivity : SDLActivity() {
 
     /**
      * The ⌨ pill: raise (or dismiss) the device soft keyboard so the player can
-     * type save-file names, as on the web. showTextInput focuses SDL's invisible
+     * type save-game names, as on the web. showTextInput focuses SDL's invisible
      * DummyEdit; its SDLInputConnection turns every committed character into
-     * plain SDL key events (nativeGenerateScancodeForUnichar — with shift
-     * synthesis), which DOSBox-X's normal keyboard path consumes. SDL_TEXTINPUT
-     * is compiled out of DOSBox-X on Android, so this key-event route is the one
-     * that works. ZeliardKeyboard shims the package-private pieces.
+     * plain SDL key events (with shift synthesis), which DOSBox-X's normal
+     * keyboard path consumes. SDL_TEXTINPUT is compiled out of DOSBox-X on
+     * Android, so this key-event route is the one that works. KeenKeyboard
+     * shims the package-private pieces.
      */
     private fun toggleKeyboard() {
-        if (org.libsdl.app.ZeliardKeyboard.isShown()) {
-            org.libsdl.app.ZeliardKeyboard.hide()
+        if (org.libsdl.app.KeenKeyboard.isShown()) {
+            org.libsdl.app.KeenKeyboard.hide()
         } else {
-            org.libsdl.app.ZeliardKeyboard.show()
+            org.libsdl.app.KeenKeyboard.show()
         }
     }
 
     /**
-     * Settings (the ⚙ pill): two tabs — Display (filter, pixels, fullscreen)
-     * and Sync (server save sync). Kept as a plain dialog built in code — the
-     * app has no other screens, and a full settings Activity would tear down
-     * the emulator surface underneath it.
+     * Settings (the ⚙ pill): two tabs — Display (filter, pixels, pogo assist,
+     * fullscreen) and Sync (server save sync). Kept as a plain dialog built in
+     * code — a full settings Activity would tear down the emulator surface
+     * underneath it.
      */
     private fun showSettings(prefs: android.content.SharedPreferences) {
         val filterNames = arrayOf("Off", "Scanlines", "CRT — scanlines + mask + vignette", "RGB grille")
         val filterKeys = arrayOf("off", "scanlines", "crt", "rgb")
-        val pixelNames = arrayOf("Smooth (soft pixels)", "Crisp (sharp pixels)")
-        val pixelKeys = arrayOf("smooth", "crisp")
+        val pixelNames = arrayOf("Crisp (sharp pixels)", "Smooth (soft pixels)")
+        val pixelKeys = arrayOf("crisp", "smooth")
+        val pogoNames = arrayOf("Off", "120 ms", "150 ms", "180 ms (default)", "240 ms", "300 ms")
+        val pogoKeys = arrayOf("off", "120", "150", "180", "240", "300")
 
         val curFilter = filterKeys.indexOf(prefs.getString("filter", "scanlines")).coerceAtLeast(0)
-        val curPixels = pixelKeys.indexOf(prefs.getString("pixels", "smooth")).coerceAtLeast(0)
+        val curPixels = pixelKeys.indexOf(prefs.getString("pixels", "crisp")).coerceAtLeast(0)
+        val curPogo = pogoKeys.indexOf(prefs.getString("pogohold", "180")).coerceAtLeast(0)
 
         val dark = android.graphics.Color.parseColor("#0b1526")
         val text = android.graphics.Color.parseColor("#e9eef7")
@@ -191,7 +197,7 @@ class ZeliardActivity : SDLActivity() {
         fun radios(names: Array<String>, checkedIdx: Int, onPick: (Int) -> Unit) =
             android.widget.RadioGroup(this).apply {
                 for ((i, n) in names.withIndex()) {
-                    addView(android.widget.RadioButton(this@ZeliardActivity).apply {
+                    addView(android.widget.RadioButton(this@KeenActivity).apply {
                         this.text = n
                         id = i
                         setTextColor(text)
@@ -224,6 +230,11 @@ class ZeliardActivity : SDLActivity() {
             addView(radios(pixelNames, curPixels) { i ->
                 prefs.edit().putString("pixels", pixelKeys[i]).apply()
                 Native.nativeSetScaleLinear(if (pixelKeys[i] == "crisp") 0 else 1)
+            })
+            addView(header("Pogo retract (hold POGO past this = auto-retract on release)"))
+            addView(radios(pogoNames, curPogo) { i ->
+                prefs.edit().putString("pogohold", pogoKeys[i]).apply()
+                Native.nativeSetEnv("KEEN_POGO_HOLD", pogoKeys[i])
             })
             addView(header("Fullscreen"))
             val fsNames = arrayOf("On (hide system bars)", "Off (show status bar)")
@@ -268,7 +279,7 @@ class ZeliardActivity : SDLActivity() {
                 runOnUiThread {
                     statusView.text = buildString {
                         if (st.err != null) { append(st.err); return@buildString }
-                        append("Cloud: ")
+                        append("Cloud (${episode.id}): ")
                         append(if (st.remoteModified == 0L) "no save for key ${st.key}"
                                else "save from ${SaveSync.fmtTime(st.remoteModified)} (${st.remoteSize / 1024} KB)")
                         append("\nThis device: ")
@@ -314,7 +325,7 @@ class ZeliardActivity : SDLActivity() {
             addView(header("Sync server"))
             addView(serverField)
             addView(header("Save key (same key = same save, everywhere)"))
-            val keyRow = android.widget.LinearLayout(this@ZeliardActivity).apply {
+            val keyRow = android.widget.LinearLayout(this@KeenActivity).apply {
                 orientation = android.widget.LinearLayout.HORIZONTAL
                 addView(keyField, android.widget.LinearLayout.LayoutParams(
                     0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -331,8 +342,8 @@ class ZeliardActivity : SDLActivity() {
             addView(syncButton("Check / sync now") {
                 runSyncOp {
                     // Safe both ways at any time: pull only applies when the
-                    // cloud is newer and this device is linked (Zeliard reads
-                    // saves at the load screen, not while playing), push only
+                    // cloud is newer and this device is linked (Keen reads
+                    // saves at the load menu, not while playing), push only
                     // when this device is newer.
                     val pulled = sync.pull()
                     sync.push()
@@ -341,11 +352,11 @@ class ZeliardActivity : SDLActivity() {
                 }
             })
             addView(header("First-link decision"))
-            addView(android.widget.TextView(this@ZeliardActivity).apply {
+            addView(android.widget.TextView(this@KeenActivity).apply {
                 setTextColor(dim); textSize = 12f
                 this.text = "Only needed the first time this device meets an existing cloud save."
             })
-            val decideRow = android.widget.LinearLayout(this@ZeliardActivity).apply {
+            val decideRow = android.widget.LinearLayout(this@KeenActivity).apply {
                 orientation = android.widget.LinearLayout.HORIZONTAL
                 addView(syncButton("Use cloud save") {
                     confirmThen("Replace this device's game files with the cloud save? " +
@@ -380,7 +391,7 @@ class ZeliardActivity : SDLActivity() {
         val tabRow = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.HORIZONTAL
             for ((i, t) in tabs.withIndex()) {
-                val b = android.widget.TextView(this@ZeliardActivity).apply {
+                val b = android.widget.TextView(this@KeenActivity).apply {
                     this.text = t.first
                     textSize = 15f
                     isAllCaps = true
@@ -443,7 +454,7 @@ class ZeliardActivity : SDLActivity() {
      * absorbs the lost height (the game pane's height only depends on width).
      */
     private fun applySystemBars() {
-        val on = getSharedPreferences("zeliard", MODE_PRIVATE).getBoolean("fullscreen", true)
+        val on = getSharedPreferences("keen456", MODE_PRIVATE).getBoolean("fullscreen", true)
         if (on) {
             goImmersive()
         } else {
@@ -454,7 +465,7 @@ class ZeliardActivity : SDLActivity() {
 
     override fun onPause() {
         // A key held when the app goes to the background would otherwise stay
-        // held in the emulator and the character keeps walking on return.
+        // held in the emulator and Keen keeps walking on return.
         overlay?.releaseAll()
         super.onPause()
     }
@@ -463,7 +474,7 @@ class ZeliardActivity : SDLActivity() {
         // The Android equivalent of the desktop's exit-time settle-up: upload
         // this session if it is the newer side, report-not-act if the server
         // moved ahead while we played. Backgrounding is the closest thing this
-        // app has to "exiting" — Android may never call anything later.
+        // screen has to "exiting" — Android may never call anything later.
         if (this::sync.isInitialized && sync.enabled) {
             syncExec.execute { sync.finalPush() }
         }
@@ -493,9 +504,9 @@ class ZeliardActivity : SDLActivity() {
     }
 
     /**
-     * Back = the game's pause/menu key rather than "quit". Quitting from a hardware
-     * gesture would drop an unsaved run, and Zeliard's own Esc menu is where you
-     * save. Holding back still backgrounds the app via the system.
+     * Back = the game's menu key rather than "quit". Quitting from a hardware
+     * gesture would drop an unsaved run; Keen's own Esc menu is where you save
+     * and quit. Holding back still backgrounds the app via the system.
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {

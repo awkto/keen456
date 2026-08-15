@@ -1,4 +1,4 @@
-package com.awkto.zeliard
+package com.awkto.keen456
 
 import android.content.Context
 import android.graphics.Canvas
@@ -28,10 +28,9 @@ import android.view.View
  * the running cost is zero.
  *
  * Geometry mirrors patch 0006's GPU blit and TouchOverlayView.layoutControls:
- * a fixed pane (ZOOM_PANE x the width-fit height) with the frame letterboxed
- * centred in it; zoomed, the frame is scaled by ZOOM_SCALE with the crop taken
- * entirely off the top (origin 1.0), so the picture is bottom-anchored in the
- * pane. Keep all three in agreement or the lines detach from the game rows.
+ * the plain top-aligned width-fit 4:3 rect (no zoom pane — Keen has no border
+ * to crop). Keep all three in agreement or the lines detach from the game
+ * rows.
  */
 class FilterOverlayView(context: Context) : View(context) {
 
@@ -51,13 +50,6 @@ class FilterOverlayView(context: Context) : View(context) {
     )
 
     var filter: String = "off"
-        set(value) {
-            if (field == value) return
-            field = value
-            invalidate()
-        }
-
-    var zoomed = false
         set(value) {
             if (field == value) return
             field = value
@@ -85,17 +77,13 @@ class FilterOverlayView(context: Context) : View(context) {
         if (w <= 0f || h <= 0f) return
 
         // Same pane as TouchOverlayView.layoutControls, including its guard.
-        var paneH = w / GAME_ASPECT * Native.ZOOM_PANE.toFloat()
+        var paneH = w / GAME_ASPECT
         if (paneH > h * 0.75f) paneH = h * 0.75f
 
-        // The full (virtual) frame rect, parts of it cropped by the pane: width-fit
-        // and centred un-zoomed; scaled about the bottom-centre when zoomed.
-        val scale = if (zoomed) Native.ZOOM_SCALE.toFloat() else 1f
-        val imgW = w * scale
-        val imgH = w / GAME_ASPECT * scale
-        val left = (w - imgW) / 2f
-        val top = if (zoomed) paneH - imgH else (paneH - imgH) / 2f
-        imgRect.set(left, top, left + imgW, top + imgH)
+        // The frame rect: the plain top-aligned width-fit (patch 0006's fit).
+        val imgW = w
+        val imgH = paneH
+        imgRect.set(0f, 0f, imgW, imgH)
 
         val save = canvas.save()
         canvas.clipRect(0f, 0f, w, minOf(paneH, imgRect.bottom))

@@ -1,4 +1,4 @@
-package com.awkto.zeliard
+package com.awkto.keen456
 
 import android.content.Context
 import android.graphics.Canvas
@@ -17,42 +17,38 @@ import kotlin.math.roundToInt
 /**
  * On-screen controls, drawn below the game.
  *
- * The app is **portrait**: the emulator draws a 4:3 picture across the top of the
- * screen (SDL_DBX_SetContentAspect + the top-aligned GPU fit), and everything
- * under it belongs to this view. That mirrors the web app's touch layout, where
- * the game pane is `75vw` tall and the controls take all the remaining height —
- * same arrangement, same palette, so the two front-ends read as one product:
+ * The app is **portrait**: the emulator draws a 4:3 picture across the top of
+ * the screen (SDL_DBX_SetContentAspect + the top-aligned GPU fit), and
+ * everything under it belongs to this view. That mirrors the web app's touch
+ * layout — same arrangement, same palette, so the two front-ends read as one
+ * product:
  *
  *     ┌───────────────────────┐
- *     │        game pane      │   (fixed height, Native.ZOOM_PANE; un-zoomed
- *     ├───────────────────────┤    the frame letterboxes inside it)
- *     │ Z 1 2 3 4 5 6 7 8 9 Y N│
- *     │                    ↕  │
- *     │  (stick)         S   M│
- *     │                       │
- *     │ ESC 💾 ⌨ F7 SPD ⏎ FF │
+ *     │        game pane      │   (plain width-fit 4:3, top-aligned)
+ *     ├───────────────────────┤
+ *     │                  Y  N │
+ *     │            SHOOT POGO │
+ *     │  (stick)              │
+ *     │              JUMP     │
+ *     │ ⚙ ESC 💾 ⌨ ⏎  FF     │
  *     └───────────────────────┘
  *
- * Same arrangement as the WASM app (#42): one strip at the top, the menu keys
- * on one compact row at the very bottom, and the whole middle belonging to the
- * stick and actions. (They started as a column between the stick and the
- * cluster, which crushed them, #40, then as a second row under the strip,
- * which read as clutter next to the WASM app.) 💾 opens the same two-press
- * Save/Load popup the web app uses.
+ * One View owns every control and every pointer. That is deliberate: Keen is
+ * played with two thumbs at once (run + jump/shoot), and a single view
+ * hit-testing all pointers itself is the only way to get reliable
+ * simultaneous presses — separate child views fight over pointer capture as
+ * soon as a thumb slides.
  *
- * One View owns every control and every pointer. That is deliberate: Zeliard is
- * played with two thumbs at once (steer + swing), and a single view hit-testing
- * all pointers itself is the only way to get reliable simultaneous presses —
- * separate child views fight over pointer capture as soon as a thumb slides.
+ * Buttons do NOT implement combos. They press plain keys:
  *
- * Buttons do NOT implement combos or auto-fire. They press plain keys, and the
- * attack-keys patch compiled into DOSBox-X turns those into the real behaviour,
- * exactly as on desktop:
+ *   JUMP  -> Ctrl            (Keen's jump key)
+ *   POGO  -> Alt             desktop-pogo.patch inside DOSBox-X injects the
+ *                            staggered Jump for the super-bounce and the
+ *                            auto-retract tap, exactly as on desktop/web
+ *   SHOOT -> Space
+ *   FF    -> Tab, held       (speedlock turbo via the mapper, as on desktop)
  *
- *   SWORD (S)  -> auto-firing sword; with the stick held down, a held thrust
- *   COMBO (A)  -> UP+DOWN held together plus an auto-repeating sword
- *
- * so the timing logic exists once, in the emulator, for all three platforms.
+ * so the timing logic exists once, in the emulator, for all platforms.
  */
 class TouchOverlayView(context: Context) : View(context) {
 
@@ -64,7 +60,6 @@ class TouchOverlayView(context: Context) : View(context) {
     private class Control(
         val id: String,
         val label: String,
-        val subLabel: String?,
         val keys: IntArray,
         val fill: Int,
         val labelColor: Int,
@@ -77,11 +72,11 @@ class TouchOverlayView(context: Context) : View(context) {
 
     // Palette lifted from the web app (css/app.css).
     private val gold = Color.parseColor("#e8b84b")
-    private val teal = Color.parseColor("#54c8e0")
-    private val crimson = Color.parseColor("#d6453f")
-    private val green = Color.parseColor("#6ee0a0")     // --good; .nbtn.zoom-btn
-    private val greenBg = Color.parseColor("#143a2f")   // .nbtn.zoom-btn background
-    private val greenInk = Color.parseColor("#06200f")  // .nbtn.zoom-btn.active text
+    private val teal = Color.parseColor("#54c8e0")      // --accent2; .abtn.pogo
+    private val shootRed = Color.parseColor("#ff6b6b")  // .abtn.shoot
+    private val jumpGreen = Color.parseColor("#6ee06e") // .abtn.jump
+    private val green = Color.parseColor("#6ee0a0")
+    private val greenBg = Color.parseColor("#143a2f")
     private val border = Color.parseColor("#2a3f63")
     private val textCol = Color.parseColor("#e9eef7")
     private val panelBg = Color.parseColor("#081020")   // .touch-controls background
@@ -103,22 +98,6 @@ class TouchOverlayView(context: Context) : View(context) {
 
     /** Top of the controls panel — directly under the emulator picture. */
     private var panelTop = 0f
-
-    /**
-     * Border-crop state (the Z button). The pane height is fixed in both states
-     * (see layoutControls), so toggling only changes the Z button's colour here;
-     * the native side of the state is applied by the activity via
-     * [onZoomChanged] -> Native.setZoom.
-     */
-    var zoomed = false
-        set(value) {
-            if (field == value) return
-            field = value
-            invalidate()
-        }
-
-    /** Called after the user toggles zoom; the activity persists + applies it. */
-    var onZoomChanged: ((Boolean) -> Unit)? = null
 
     /** Called when the ⚙ pill is tapped; the activity shows the settings dialog. */
     var onOpenSettings: (() -> Unit)? = null
@@ -161,41 +140,28 @@ class TouchOverlayView(context: Context) : View(context) {
 
     private fun buildControls() {
         controls.clear()
-        // Action cluster, as in the web overlay: COMBO on top, SWORD and MAGIC
-        // beneath it.
-        controls += Control("combo", "↕", "SWORD", intArrayOf(KeyEvent.KEYCODE_A), gold, ink, true)
-        controls += Control("sword", "SWORD", null, intArrayOf(KeyEvent.KEYCODE_S), crimson, Color.WHITE, true, 0.8f)
-        controls += Control("magic", "MAGIC", null, intArrayOf(KeyEvent.KEYCODE_ALT_LEFT), teal, ink, true, 0.8f)
+        // Action cluster, as on the web (.actions grid): SHOOT and POGO on
+        // top, JUMP centred beneath them — the thumb rests on JUMP.
+        controls += Control("shoot", "SHOOT", intArrayOf(KeyEvent.KEYCODE_SPACE), shootRed, ink, true, 0.7f)
+        controls += Control("pogo", "POGO", intArrayOf(KeyEvent.KEYCODE_ALT_LEFT), teal, ink, true, 0.7f)
+        controls += Control("jump", "JUMP", intArrayOf(KeyEvent.KEYCODE_CTRL_LEFT), jumpGreen, ink, true, 0.7f)
 
-        // Bottom menu row. FF is hold-to-fast-forward: it just holds F, and
-        // the attack-keys patch inside the emulator drives the speedlock
-        // handler on press/release — same shape as SWORD/COMBO. 💾 opens the
-        // Save/Load popup (no key of its own; the popup buttons tap G / L,
-        // which the same emulator poll turns into save/load state).
-        controls += Control("esc", "ESC", null, intArrayOf(KeyEvent.KEYCODE_ESCAPE), btnBg, textCol, false)
-        controls += Control("saveload", "💾", null, intArrayOf(), greenBg, green, false)
-        // Soft-keyboard toggle, as on the web (#kbd-btn): the game's save-file
-        // prompt needs free typing. No key of its own — handleDown hands it to
-        // the activity, which raises/hides the IME through the SDL glue.
-        controls += Control("kbd", "⌨", null, intArrayOf(), btnBg, textCol, false)
-        controls += Control("f7", "F7", null, intArrayOf(KeyEvent.KEYCODE_F7), btnBg, textCol, false)
-        controls += Control("f9", "SPD", null, intArrayOf(KeyEvent.KEYCODE_F9), btnBg, gold, false)
-        controls += Control("enter", "⏎", null, intArrayOf(KeyEvent.KEYCODE_ENTER), btnBg, textCol, false)
-        controls += Control("ff", "FF ▶▶", null, intArrayOf(KeyEvent.KEYCODE_F), btnBg, gold, false, 0.7f)
-        // Settings (filters etc.) — no key; handleDown hands it to the activity.
-        controls += Control("gear", "⚙", null, intArrayOf(), btnBg, textCol, false)
+        // Y / N for the game's keyboard confirm prompts (top of the panel,
+        // right side — where the web keeps #yn-keys).
+        controls += Control("ny", "Y", intArrayOf(KeyEvent.KEYCODE_Y), btnBg, gold, false)
+        controls += Control("nn", "N", intArrayOf(KeyEvent.KEYCODE_N), btnBg, gold, false)
 
-        // Zoom toggle at the head of the number strip, as on the web
-        // (.nbtn.zoom-btn). Presses no key — handleDown special-cases it.
-        controls += Control("zoom", "Z", null, intArrayOf(), greenBg, green, false)
-
-        // Number / yes-no strip: needed for the F9 speed prompt and the game's
-        // Y/N confirmations. Always visible, as on the web.
-        for (i in 1..9) {
-            controls += Control("n$i", "$i", null, intArrayOf(KeyEvent.KEYCODE_0 + i), btnBg, textCol, false)
-        }
-        controls += Control("ny", "Y", null, intArrayOf(KeyEvent.KEYCODE_Y), btnBg, gold, false)
-        controls += Control("nn", "N", null, intArrayOf(KeyEvent.KEYCODE_N), btnBg, gold, false)
+        // Bottom menu row. FF is hold-to-fast-forward: it holds Tab, which the
+        // mapper binds to DOSBox-X's speedlock (same as desktop). 💾 opens the
+        // Save/Load popup (no key of its own; the popup buttons tap the
+        // mapper's save/load-state combos). ⚙ and ⌨ are handed to the
+        // activity.
+        controls += Control("gear", "⚙", intArrayOf(), btnBg, textCol, false)
+        controls += Control("esc", "ESC", intArrayOf(KeyEvent.KEYCODE_ESCAPE), btnBg, textCol, false, 0.8f)
+        controls += Control("saveload", "💾", intArrayOf(), greenBg, green, false)
+        controls += Control("kbd", "⌨", intArrayOf(), btnBg, textCol, false)
+        controls += Control("enter", "⏎", intArrayOf(KeyEvent.KEYCODE_ENTER), btnBg, textCol, false)
+        controls += Control("ff", "FF ▶▶", intArrayOf(KeyEvent.KEYCODE_TAB), btnBg, gold, false, 0.7f)
     }
 
     private fun byId(id: String) = controls.first { it.id == id }
@@ -209,32 +175,24 @@ class TouchOverlayView(context: Context) : View(context) {
         val pad = w * 0.025f
         val gap = w * 0.012f
 
-        // The picture pane has ONE fixed height in both zoom states — ZOOM_PANE
-        // times the 4:3 width-fit — so nothing below it moves when Z toggles.
-        // Un-zoomed, the native side letterboxes the frame between black bars
-        // inside that pane; this must agree with SDL_DBX_SetContentZoom's pane,
-        // or the controls detach from the picture.
-        panelTop = w / GAME_ASPECT * Native.ZOOM_PANE.toFloat()
+        // The picture is the plain top-aligned width-fit 4:3 rect (no zoom
+        // pane — Keen has no border to crop). Must agree with patch 0006's
+        // aspect fit, or the controls detach from the picture.
+        panelTop = w / GAME_ASPECT
         if (panelTop > h * 0.75f) panelTop = h * 0.75f   // guard: never eat the whole screen
 
-        // --- Z + number / Y-N strip across the top of the panel -------------
-        val strip = listOf("zoom") + (1..9).map { "n$it" } + listOf("ny", "nn")
-        val nW = (w - 2 * pad - gap * (strip.size - 1)) / strip.size
-        val nH = min(nW * 1.15f, dp(40f))
-        var nx = pad
+        // --- Y/N pair at the top-right of the panel --------------------------
+        val nW = w * 0.11f
+        val nH = min(nW * 0.8f, dp(40f))
         val nY = panelTop + pad
-        for (id in strip) {
-            byId(id).rect.set(nx, nY, nx + nW, nY + nH)
-            nx += nW + gap
-        }
+        byId("nn").rect.set(w - pad - nW, nY, w - pad, nY + nH)
+        byId("ny").rect.set(w - pad - nW * 2f - gap, nY, w - pad - nW - gap, nY + nH)
 
-        // --- bottom row: ESC 💾 F7 SPD ⏎ FF ---------------------------------
-        // At the very bottom of the screen, as on the WASM app (#42): compact
-        // web-sized pills (0.12w x 0.066w) spread across the width. This frees
-        // the whole middle of the panel for the stick and actions. dp(10)
-        // keeps the pills clear of the immersive-mode gesture bar.
-        val menu = listOf("gear", "esc", "saveload", "kbd", "f7", "f9", "enter", "ff")
-        val mW = min((w - 2 * pad - gap * (menu.size - 1)) / menu.size, w * 0.12f)
+        // --- bottom row: ⚙ ESC 💾 ⌨ ⏎ FF ------------------------------------
+        // Compact web-sized pills spread across the width; dp(10) keeps them
+        // clear of the immersive-mode gesture bar.
+        val menu = listOf("gear", "esc", "saveload", "kbd", "enter", "ff")
+        val mW = min((w - 2 * pad - gap * (menu.size - 1)) / menu.size, w * 0.13f)
         val mH = min(mW * 0.55f, dp(40f))
         val mY = h - pad - dp(10f) - mH
         val mStep = (w - 2 * pad - mW) / (menu.size - 1)
@@ -252,22 +210,17 @@ class TouchOverlayView(context: Context) : View(context) {
         popupSave.set(px0, popupLoad.top - gap - ph, px0 + pw, popupLoad.top - gap)
 
         // --- main row: stick | action cluster --------------------------------
-        // Centred between the strip and the bottom row — the WASM arrangement:
-        // thumbs land mid-panel, and the bottom row stays out of their way.
         val rowTop = nY + nH + gap * 2f
         val rowBottom = mY - gap * 2f
-        val region = rowBottom - rowTop
 
-        // Sized to match the WASM app's overlay, measured off side-by-side
-        // device screenshots (#42): stick ring r = 0.17w, action circles
-        // r = 0.09w. Bigger read as comically oversized next to it.
+        // Sized to match the WASM app's overlay: stick ring r = 0.17w, action
+        // circles r = 0.09w.
+        val region = rowBottom - rowTop
         stickR = min(w * 0.17f, region * 0.30f)
         val aR = min(w * 0.09f, region * 0.20f)
-        // Tall enough for the stick or for the two-row action cluster.
         val blockH = maxOf(stickR * 2f, aR * 4.2f)
         // Sit above centre and well clear of the screen edges — thumbs curl in
-        // from the sides, so flush-to-the-edge placement felt cramped (dp(4)
-        // was still too close to the edges on-device).
+        // from the sides, so flush-to-the-edge placement felt cramped.
         val nudge = dp(12f)
         val rowMid = maxOf((rowTop + rowBottom) / 2f, rowTop + blockH / 2f) - nudge
 
@@ -277,12 +230,13 @@ class TouchOverlayView(context: Context) : View(context) {
         knobY = stickCy
         fun place(c: Control, ccx: Float, ccy: Float, r: Float) =
             c.rect.set(ccx - r, ccy - r, ccx + r, ccy + r)
-        val magicCx = w - pad - aR - nudge
-        val swordCx = magicCx - aR * 2.2f
-        val lowerCy = rowMid + blockH / 2f - aR
-        place(byId("magic"), magicCx, lowerCy, aR)
-        place(byId("sword"), swordCx, lowerCy, aR)
-        place(byId("combo"), (swordCx + magicCx) / 2f, lowerCy - aR * 2.2f, aR)
+        // Web grid: SHOOT top-left, POGO top-right, JUMP centred beneath.
+        val pogoCx = w - pad - aR - nudge
+        val shootCx = pogoCx - aR * 2.2f
+        val upperCy = rowMid - blockH / 2f + aR
+        place(byId("shoot"), shootCx, upperCy, aR)
+        place(byId("pogo"), pogoCx, upperCy, aR)
+        place(byId("jump"), (shootCx + pogoCx) / 2f, upperCy + aR * 2.2f, aR)
 
         textPaint.textSize = nH * 0.5f
         strokePaint.strokeWidth = dp(1.5f)
@@ -305,10 +259,7 @@ class TouchOverlayView(context: Context) : View(context) {
         canvas.drawCircle(knobX, knobY, stickR * 0.42f, fillPaint)
 
         for (c in controls) {
-            // The zoom toggle shows its state, web-style: dark green idle,
-            // solid green with dark text while the crop is on.
-            val zoomActive = c.id == "zoom" && zoomed
-            fillPaint.color = if (zoomActive) green else c.fill
+            fillPaint.color = c.fill
             if (c.pressed) fillPaint.alpha = (fillPaint.alpha * 0.6f).roundToInt().coerceIn(0, 255)
             if (c.circle) {
                 val r = c.rect.width() / 2f
@@ -319,20 +270,11 @@ class TouchOverlayView(context: Context) : View(context) {
                 canvas.drawRoundRect(c.rect, rr, rr, fillPaint)
                 canvas.drawRoundRect(c.rect, rr, rr, strokePaint)
             }
-            textPaint.color = if (zoomActive) greenInk else c.labelColor
+            textPaint.color = c.labelColor
             val base = textPaint.textSize
             textPaint.textSize = base * c.textScale * (if (c.circle) 1.15f else 1f)
             val fm = textPaint.fontMetrics
-            if (c.subLabel == null) {
-                canvas.drawText(c.label, c.rect.centerX(), c.rect.centerY() - (fm.ascent + fm.descent) / 2f, textPaint)
-            } else {
-                val yc = c.rect.centerY()
-                canvas.drawText(c.label, c.rect.centerX(), yc - (fm.ascent + fm.descent) / 2f - textPaint.textSize * 0.42f, textPaint)
-                val sub = textPaint.textSize
-                textPaint.textSize = sub * 0.62f
-                canvas.drawText(c.subLabel, c.rect.centerX(), yc + textPaint.textSize * 1.0f, textPaint)
-                textPaint.textSize = sub
-            }
+            canvas.drawText(c.label, c.rect.centerX(), c.rect.centerY() - (fm.ascent + fm.descent) / 2f, textPaint)
             textPaint.textSize = base
         }
 
@@ -392,8 +334,9 @@ class TouchOverlayView(context: Context) : View(context) {
             saveLoadOpen = false
             invalidate()
             when {
-                popupSave.contains(x, y) -> tapKey(KeyEvent.KEYCODE_G)
-                popupLoad.contains(x, y) -> tapKey(KeyEvent.KEYCODE_L)
+                // The mapper's combos, same as desktop: Ctrl+. save, Ctrl+\ load.
+                popupSave.contains(x, y) -> tapCombo(KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_PERIOD)
+                popupLoad.contains(x, y) -> tapCombo(KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_BACKSLASH)
             }
             return true
         }
@@ -406,13 +349,6 @@ class TouchOverlayView(context: Context) : View(context) {
         }
         for (c in controls) {
             if (!hit(c, x, y)) continue
-            if (c.id == "zoom") {
-                // A toggle, not a key: flip the crop and re-lay-out. Not added
-                // to pointerControl — there is nothing to release on up.
-                zoomed = !zoomed
-                onZoomChanged?.invoke(zoomed)
-                return true
-            }
             if (c.id == "saveload") {
                 saveLoadOpen = true
                 invalidate()
@@ -463,8 +399,8 @@ class TouchOverlayView(context: Context) : View(context) {
     }
 
     /**
-     * Eight-way from the stick, with a dead zone. Diagonals hold both keys, which
-     * is what Zeliard wants for jump-forward and the down+sword thrust.
+     * Eight-way from the stick, with a dead zone. Diagonals hold both keys —
+     * Keen wants them for climbing ledges and shooting diagonally on the pogo.
      */
     private fun updateStick(x: Float, y: Float) {
         var dx = x - stickCx
@@ -530,5 +466,16 @@ class TouchOverlayView(context: Context) : View(context) {
     fun tapKey(code: Int) {
         SDLActivity.onNativeKeyDown(code)
         postDelayed({ SDLActivity.onNativeKeyUp(code) }, 60)
+    }
+
+    /**
+     * Tap a two-key combo (modifier first): down mod, down key, then release
+     * in reverse. Used for the mapper's save/load-state bindings.
+     */
+    private fun tapCombo(mod: Int, code: Int) {
+        SDLActivity.onNativeKeyDown(mod)
+        postDelayed({ SDLActivity.onNativeKeyDown(code) }, 30)
+        postDelayed({ SDLActivity.onNativeKeyUp(code) }, 110)
+        postDelayed({ SDLActivity.onNativeKeyUp(mod) }, 150)
     }
 }

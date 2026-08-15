@@ -1,4 +1,4 @@
-package com.awkto.zeliard
+package com.awkto.keen456
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -23,25 +23,30 @@ import org.json.JSONObject
  * native/launcher/core/{sync.go,link.go}, same wire protocol as the WASM app
  * and docker/saves-api.py: saves scoped by an opaque sync key (X-Client-Id),
  * client-supplied epoch-ms timestamps (X-Save-Modified), newer-wins on both
- * sides — except on FIRST contact with a key that already holds a save, which
- * is never resolved automatically (the settings UI asks; see the link-state
- * rules below). The one synced slot is `auto`: a bootable .jsdos zip with the
- * game files at the root. Entries this build does not own (js-dos metadata,
- * the web app's `save/1.sav` quicksave state) are carried through every push
- * byte for byte — rebuilding the bundle without them once destroyed the
- * browser's quicksave on desktop, and must not happen here.
+ * sides — except on FIRST contact with a slot that already holds a save,
+ * which is never resolved automatically (the settings UI asks; see the
+ * link-state rules below).
+ *
+ * One instance per episode: the slot is the episode id (keen4/keen5/keen6),
+ * exactly the web app's slotFor(g) and the Go launcher's sy.slot, so all
+ * three platforms share saves per episode with no namespace translation. The
+ * synced blob is a bootable .jsdos zip with the game files at the root.
+ * Entries this build does not own (js-dos metadata, the web app's quicksave
+ * state) are carried through every push byte for byte — rebuilding the bundle
+ * without them once destroyed the browser's quicksave on desktop, and must
+ * not happen here.
  *
  * DOSBox-X save states (DATA_DIR/save/) are deliberately NOT synced: they are
  * snapshots of emulator internals, valid only for the build that wrote them.
  *
- * All methods block; the activity runs them on its single sync executor so
- * operations never interleave (the Go code gets the same property from its
- * one launcher process).
+ * All methods block; callers run them on a single executor so operations
+ * never interleave (the Go code gets the same property from its one launcher
+ * process).
  */
-class SaveSync(private val ctx: Context) {
+class SaveSync(private val ctx: Context, private val ep: Episode) {
 
     companion object {
-        private const val TAG = "ZeliardSync"
+        private const val TAG = "KeenSync"
 
         /** Web alphabet: no I/O/0/1 — the key is meant to be read aloud and typed. */
         private const val ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -63,19 +68,14 @@ class SaveSync(private val ctx: Context) {
             return raw.map { ALPHABET[(it.toInt() and 0xff) % ALPHABET.length] }.joinToString("")
         }
 
-        /**
-         * Launcher-owned or app-owned files living in the game dir that must
-         * never travel to the server nor count as save progress. ZMENU* is the
-         * desktop menu machinery (kept for parity); dotfiles are Android
-         * bookkeeping.
-         */
-        private fun ignored(name: String) =
-            name.uppercase().startsWith("ZMENU") || name.startsWith(".")
+        /** App bookkeeping that must never travel nor count as save progress. */
+        private fun ignored(name: String) = name.startsWith(".")
 
         /**
          * Whether a bundle entry is a root-level game file that this build
          * manages. Everything else — `.jsdos/` metadata, `save/`, any nested
          * path — belongs to whoever put it there and is preserved untouched.
+         * Same rule as the desktop's ownedByUs (sync.go).
          */
         private fun ownedByUs(name: String): Boolean {
             if (name.contains('/') || name.contains('\\') || name == "." || name == "..") return false
@@ -86,17 +86,20 @@ class SaveSync(private val ctx: Context) {
             SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(epochMs))
     }
 
-    private val prefs: SharedPreferences = ctx.getSharedPreferences("zeliard", Context.MODE_PRIVATE)
-    private val gameDir: File get() = GameSetup.gameDir(ctx)
+    private val prefs: SharedPreferences = ctx.getSharedPreferences("keen456", Context.MODE_PRIVATE)
+    private val slot: String = ep.id
+    private val gameDir: File get() = GameSetup.gameDir(ctx, ep)
 
     /** foreign: the remote bundle's entries this build does not own (see class doc). */
     private var foreign = HashMap<String, ByteArray>()
     private var foreignLoaded = false
 
-    /** The `auto` modified time we last observed on the server. */
+    /** The slot's modified time we last observed on the server. */
     private var remoteSeen = 0L
 
     // --- configuration ------------------------------------------------------
+    // Server/token/key are GLOBAL (one identity, as on web/desktop); only the
+    // slot differs per episode.
 
     /** Sync server URL, "" = sync off. Always returned with a trailing slash. */
     var base: String
@@ -136,27 +139,22 @@ class SaveSync(private val ctx: Context) {
     val enabled: Boolean get() = base.isNotEmpty()
 
     // --- link state (link.go) ----------------------------------------------
-    // Stored as JSON in prefs: {"KEY": {"last_synced": 123}, ...}. The rule it
-    // exists for: the first time a device is pointed at a key that already
-    // holds a save, there is no shared history and no basis for choosing —
-    // that case is reported, never resolved automatically.
+    // Stored as JSON in prefs: {"KEY/slot": {"last_synced": 123}, ...} — per
+    // key AND slot, as on desktop (linkID = key + "/" + slot): having linked
+    // keen4 says nothing about first contact with an existing keen5 save.
+
+    private fun linkId(k: String = key) = "$k/$slot"
 
     private fun loadLinks(): JSONObject =
         try { JSONObject(prefs.getString("syncLinks", "{}")!!) } catch (_: Exception) { JSONObject() }
 
     private fun saveLinks(o: JSONObject) = prefs.edit().putString("syncLinks", o.toString()).apply()
 
-    fun isLinked(k: String = key): Boolean = loadLinks().has(k)
+    fun isLinked(): Boolean = loadLinks().has(linkId())
 
     fun markSynced(remote: Long) {
         val o = loadLinks()
-        o.put(key, JSONObject().put("last_synced", remote))
-        saveLinks(o)
-    }
-
-    fun unlink(k: String = key) {
-        val o = loadLinks()
-        o.remove(k)
+        o.put(linkId(), JSONObject().put("last_synced", remote))
         saveLinks(o)
     }
 
@@ -172,7 +170,7 @@ class SaveSync(private val ctx: Context) {
     private fun shouldPull(remote: Long, local: Long): Boolean {
         if (remote == 0L) return false
         if (needsDecision(remote)) {
-            Log.i(TAG, "not linked to key $key yet — not touching either copy")
+            Log.i(TAG, "not linked to $slot for key $key yet — not touching either copy")
             return false
         }
         return remote > local
@@ -181,7 +179,7 @@ class SaveSync(private val ctx: Context) {
     private fun shouldPush(remote: Long, local: Long): Boolean {
         if (local == 0L) return false
         if (needsDecision(remote)) {
-            Log.i(TAG, "not linked to key $key yet — refusing to overwrite the server's save")
+            Log.i(TAG, "not linked to $slot for key $key yet — refusing to overwrite the server's save")
             return false
         }
         return local > remote
@@ -194,10 +192,15 @@ class SaveSync(private val ctx: Context) {
         gameDir.listFiles()?.filter { it.isFile && !ignored(it.name) }
             ?.maxOfOrNull { it.lastModified() } ?: 0L
 
-    /** The player's in-game town saves (*.USR) — the honest "has anyone played here" test. */
+    /**
+     * The player's in-game saves — SAVEGAM?.CK<n>, the files Keen writes from
+     * its own save menu. The honest "has anyone played here" test.
+     */
     private fun countGameSaves(): Pair<Int, Long> {
-        val saves = gameDir.listFiles()?.filter { it.isFile && it.name.uppercase().endsWith(".USR") }
-            ?: emptyList()
+        val suffix = ".CK${ep.num}"
+        val saves = gameDir.listFiles()?.filter {
+            it.isFile && it.name.uppercase().startsWith("SAVEGAM") && it.name.uppercase().endsWith(suffix)
+        } ?: emptyList()
         return Pair(saves.size, saves.maxOfOrNull { it.lastModified() } ?: 0L)
     }
 
@@ -260,9 +263,9 @@ class SaveSync(private val ctx: Context) {
         null
     }
 
-    /** The current `auto` bundle, or null if there is none (404). Throws on error. */
+    /** The slot's current bundle, or null if there is none (404). Throws on error. */
     private fun fetchBundle(): ByteArray? {
-        val conn = open("GET", "api/saves/auto")
+        val conn = open("GET", "api/saves/$slot")
         val code = conn.responseCode
         val body = conn.readBody()
         if (code == 404) return null
@@ -291,10 +294,11 @@ class SaveSync(private val ctx: Context) {
     }
 
     /**
-     * Rebuild the web app's `auto` blob: foreign entries first, verbatim; then
-     * the canonical js-dos metadata (from assets, only when the bundle didn't
-     * already carry it — a brand-new save with no browser history); then the
-     * current game-dir files at the root.
+     * Rebuild the web app's blob for this slot: foreign entries first,
+     * verbatim; then the canonical js-dos metadata (from assets, with
+     * __RUNCMD__ resolved to this episode's executable — only when the bundle
+     * didn't already carry it, i.e. a brand-new save with no browser
+     * history); then the current game-dir files at the root.
      */
     private fun zipBundle(): ByteArray {
         val buf = ByteArrayOutputStream()
@@ -304,13 +308,16 @@ class SaveSync(private val ctx: Context) {
                 zw.write(data)
                 zw.closeEntry()
             }
+            val runcmd = Episodes.findExecutable(gameDir, ep) ?: "KEEN${ep.num}E.EXE"
             for ((entry, asset) in mapOf(
-                ".jsdos/dosbox.conf" to "jsdos-meta/jsdos-dosbox.conf",
+                ".jsdos/dosbox.conf" to "jsdos-meta/jsdos-dosbox.conf.tmpl",
                 "dosbox.conf" to "jsdos-meta/root-dosbox.conf",
             )) {
                 if (foreign.containsKey(entry)) continue
                 zw.putNextEntry(ZipEntry(entry))
-                ctx.assets.open(asset).use { it.copyTo(zw) }
+                val text = ctx.assets.open(asset).bufferedReader().use { it.readText() }
+                    .replace("__RUNCMD__", runcmd)
+                zw.write(text.toByteArray())
                 zw.closeEntry()
             }
             for (f in gameDir.listFiles().orEmpty()) {
@@ -327,6 +334,7 @@ class SaveSync(private val ctx: Context) {
 
     /** Extract a bundle's root game files into the game dir; everything else stays out. */
     private fun unzipBundle(blob: ByteArray) {
+        gameDir.mkdirs()
         ZipInputStream(ByteArrayInputStream(blob)).use { zin ->
             var e: ZipEntry? = zin.nextEntry
             while (e != null) {
@@ -354,9 +362,9 @@ class SaveSync(private val ctx: Context) {
         val dir = File(GameSetup.baseDir(ctx), "backups")
         dir.mkdirs()
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val out = File(dir, "game-$tag-$stamp.zip")
+        val out = File(dir, "$slot-$tag-$stamp.zip")
         out.writeBytes(buf.toByteArray())
-        Log.i(TAG, "backed up game dir to $out")
+        Log.i(TAG, "backed up $slot game dir to $out")
         return out
     }
 
@@ -364,16 +372,15 @@ class SaveSync(private val ctx: Context) {
 
     /**
      * Pull the server's save when it is newer; always learn what foreign
-     * content the bundle holds. Run at launch, while DOSBox-X is still booting
-     * the intro — Zeliard only reads .USR files when the player opens the load
-     * screen, so the extraction cannot race a save the game is using.
-     * Returns true if the game dir was updated.
+     * content the bundle holds. Run at launch, while DOSBox-X is still
+     * booting — Keen reads SAVEGAM files when the player opens the load
+     * menu, so an extraction that lands mid-boot cannot race a save the game
+     * is using. Returns true if the game dir was updated.
      */
     fun pull(): Boolean {
         if (!healthy()) return false
         val mods = remoteList() ?: return false
-        retireOldSlots(mods.keys)
-        val remote = mods["auto"]?.first ?: 0L
+        val remote = mods[slot]?.first ?: 0L
         remoteSeen = remote
         if (remote == 0L) {
             foreignLoaded = true // nothing on the server: nothing to preserve
@@ -397,23 +404,8 @@ class SaveSync(private val ctx: Context) {
         // immediately look like fresh local changes.
         stampDir(remote)
         markSynced(remote)
-        Log.i(TAG, "pulled auto (server was newer)")
+        Log.i(TAG, "pulled $slot (server was newer)")
         return true
-    }
-
-    /** Delete slots this build no longer writes (see sync.go's retireOldSlots). */
-    private fun retireOldSlots(slots: Set<String>) {
-        for (dead in listOf("native-game", "native-states")) {
-            if (dead !in slots) continue
-            try {
-                val conn = open("DELETE", "api/saves/$dead")
-                conn.responseCode
-                conn.readBody()
-                Log.i(TAG, "removed retired $dead slot")
-            } catch (e: Exception) {
-                Log.w(TAG, "removing retired $dead slot: $e")
-            }
-        }
     }
 
     /** Upload the game dir when it is newer, carrying foreign entries through. */
@@ -421,7 +413,7 @@ class SaveSync(private val ctx: Context) {
         val local = localModified()
         if (local == 0L || !healthy()) return
         val mods = remoteList() ?: return
-        val remote = mods["auto"]?.first ?: 0L
+        val remote = mods[slot]?.first ?: 0L
         // Refuse to push over a bundle we have not inspected — uploading now
         // would silently drop whatever the other platform stored in it.
         if (remote != 0L && (!foreignLoaded || remote != remoteSeen)) {
@@ -440,7 +432,7 @@ class SaveSync(private val ctx: Context) {
     private fun uploadBundle(local: Long) {
         try {
             val blob = zipBundle()
-            val conn = open("PUT", "api/saves/auto")
+            val conn = open("PUT", "api/saves/$slot")
             conn.doOutput = true
             conn.setRequestProperty("X-Save-Modified", local.toString())
             conn.outputStream.use { it.write(blob) }
@@ -452,7 +444,7 @@ class SaveSync(private val ctx: Context) {
             }
             remoteSeen = local
             markSynced(local)
-            Log.i(TAG, "pushed auto (${blob.size / 1024} KB, ${foreign.size} preserved entries)")
+            Log.i(TAG, "pushed $slot (${blob.size / 1024} KB, ${foreign.size} preserved entries)")
         } catch (e: Exception) {
             Log.w(TAG, "push: $e")
         }
@@ -467,7 +459,7 @@ class SaveSync(private val ctx: Context) {
     fun finalPush() {
         if (!healthy()) return
         val mods = remoteList() ?: return
-        val remote = mods["auto"]?.first ?: 0L
+        val remote = mods[slot]?.first ?: 0L
         val local = localModified()
         if (remote > local && remote != 0L) {
             Log.w(TAG, "server save (${fmtTime(remote)}) is newer than this session (${fmtTime(local)}) — another device wrote while you played; nothing changed")
@@ -501,21 +493,21 @@ class SaveSync(private val ctx: Context) {
         }
         val mods = remoteList()
             ?: return Status(key, true, 0, 0, local, n, newest, isLinked(), false, "listing saves failed")
-        val remote = mods["auto"] ?: Pair(0L, 0L)
+        val remote = mods[slot] ?: Pair(0L, 0L)
         return Status(key, true, remote.first, remote.second, local, n, newest,
             isLinked(), needsDecision(remote.first), null)
     }
 
     /**
-     * Take the server's save for this key, after backing up the local one.
+     * Take the server's save for this slot, after backing up the local one.
      * Links the device. Returns the backup file (null if there was nothing
      * local to back up). Throws with a user-readable message on failure.
      */
     fun adoptCloud(): File? {
         if (!healthy()) throw RuntimeException("no sync server reachable at $base")
         val mods = remoteList() ?: throw RuntimeException("listing saves failed")
-        val remote = mods["auto"]?.first ?: 0L
-        if (remote == 0L) throw RuntimeException("there is no save on the server for key $key")
+        val remote = mods[slot]?.first ?: 0L
+        if (remote == 0L) throw RuntimeException("there is no $slot save on the server for key $key")
         val blob = fetchBundle() ?: throw RuntimeException("the server's save could not be read")
         var backup: File? = null
         if (localModified() != 0L) backup = backupGameDir("before-cloud")
@@ -524,7 +516,7 @@ class SaveSync(private val ctx: Context) {
         stampDir(remote)
         remoteSeen = remote
         markSynced(remote)
-        Log.i(TAG, "adopted the server's save for key $key")
+        Log.i(TAG, "adopted the server's $slot save for key $key")
         return backup
     }
 
@@ -537,7 +529,7 @@ class SaveSync(private val ctx: Context) {
         val local = localModified()
         if (local == 0L) throw RuntimeException("there is no local save to upload yet")
         val mods = remoteList() ?: throw RuntimeException("listing saves failed")
-        if ((mods["auto"]?.first ?: 0L) != 0L) {
+        if ((mods[slot]?.first ?: 0L) != 0L) {
             val blob = fetchBundle()
                 ?: throw RuntimeException("cannot read the server's bundle — uploading now could discard the web app's save")
             loadForeign(blob)
@@ -545,6 +537,6 @@ class SaveSync(private val ctx: Context) {
             foreignLoaded = true
         }
         uploadBundle(local)
-        Log.i(TAG, "uploaded this device's save for key $key")
+        Log.i(TAG, "uploaded this device's $slot save for key $key")
     }
 }
