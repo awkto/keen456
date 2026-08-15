@@ -1,5 +1,5 @@
 diff --git a/src/gui/sdlmain.cpp b/src/gui/sdlmain.cpp
-index c654f88..dab1481 100644
+index c654f88..cd4b1fb 100644
 --- a/src/gui/sdlmain.cpp
 +++ b/src/gui/sdlmain.cpp
 @@ -1116,6 +1116,34 @@ bool IsDebuggerActive(void);
@@ -49,27 +49,46 @@ index c654f88..dab1481 100644
  #if defined(C_SDL2)
      SDL_SetWindowTitle(sdl.window,title);
  #else
-@@ -1791,6 +1824,19 @@ SDL_Window* GFX_GetSDLWindow(void) {
+@@ -1791,6 +1824,38 @@ SDL_Window* GFX_GetSDLWindow(void) {
  SDL_Window* GFX_SetSDLWindowMode(uint16_t width, uint16_t height, SCREEN_TYPES screenType)
  {
      static SCREEN_TYPES lastType = SCREEN_SURFACE;
 +#if defined(__ANDROID__)
-+    /* The Android SDL window is always the full display; keep the window/renderer
-+       (and thus the GL viewport) at display size. The small DOS framebuffer is
-+       handled as a content-sized texture scaled on the GPU (see output_surface +
-+       SDL_DBX_SetContentSize), not by shrinking the window. */
++    /* The Android SDL window always spans the whole surface; keep the
++       window/renderer (and thus the GL viewport) at that size. The small DOS
++       framebuffer is handled as a content-sized texture scaled on the GPU (see
++       output_surface + SDL_DBX_SetContentSize), not by shrinking the window.
++
++       "That size" is the CURRENT window size, not the desktop display mode:
++       with the status bar visible (Settings > Fullscreen off) the surface is
++       SMALLER than the display, and forcing the display's size here put a
++       taller-than-surface viewport on the GL surface - GL anchors the viewport
++       bottom-left, so the top of the picture (~30% of the game pane, one
++       status + nav bar) was pushed off the top of the screen whenever a mode
++       set ran with bars shown: a fresh process started after an app switch, or
++       any DOS video-mode change. SDL keeps the window w/h in step with
++       SDLSurface.surfaceChanged, so it is the surface truth; the desktop mode
++       is only the seed before the first window exists. */
 +    {
-+        SDL_DisplayMode dm;
-+        if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
-+            width = (uint16_t)dm.w;
-+            height = (uint16_t)dm.h;
++        int cw = 0, ch = 0;
++        if (sdl.window != NULL)
++            SDL_GetWindowSize(sdl.window, &cw, &ch);
++        if (cw > 0 && ch > 0) {
++            width = (uint16_t)cw;
++            height = (uint16_t)ch;
++        } else {
++            SDL_DisplayMode dm;
++            if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
++                width = (uint16_t)dm.w;
++                height = (uint16_t)dm.h;
++            }
 +        }
 +    }
 +#endif
      if (sdl.renderer) {
          SDL_DestroyRenderer(sdl.renderer);
          sdl.renderer = nullptr;
-@@ -8641,6 +8687,14 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
+@@ -8641,6 +8706,14 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
      int workdirsave = 0;
      std::string workdirsaveas = "";
  
@@ -84,7 +103,7 @@ index c654f88..dab1481 100644
  #if defined(MACOSX) || defined(LINUX) || (defined(WIN32) && !defined(HX_DOS))
      {
          if(control->opt_promptfolder < 0) {
-@@ -9358,8 +9412,11 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
+@@ -9358,8 +9431,11 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
          else {
              const char* env_driver = getenv("SDL_VIDEODRIVER");
              if(!env_driver || !*env_driver) {
@@ -97,7 +116,7 @@ index c654f88..dab1481 100644
  #elif defined(WIN32)
                  /* hack: Encourage SDL to use windib if not otherwise specified */
  #if defined(C_SDL2)
-@@ -9567,6 +9624,36 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
+@@ -9567,6 +9643,36 @@ int main(int argc, char* argv[]) SDL_MAIN_NOEXCEPT {
          }
  #endif
  
