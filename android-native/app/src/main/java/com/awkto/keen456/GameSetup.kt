@@ -95,6 +95,37 @@ object GameSetup {
     }
 
     /**
+     * Whether Keen 4's installed data is the registered version rather than the
+     * bundled shareware. The player gets it here by importing their own files
+     * (PickerActivity) or by save sync pulling the web app's bundle. Detected by
+     * comparing GAMEMAPS.CK4's size against the bundled shareware copy — the
+     * registered release's maps file differs, and this needs no marker that
+     * sync or an import could miss. Non-shareware episodes are trivially "full":
+     * any files they have are the player's own.
+     */
+    fun isFullVersion(ctx: Context, ep: Episode): Boolean {
+        if (!ep.shareware) return true
+        val name = "GAMEMAPS.CK${ep.num}"
+        val installed = File(gameDir(ctx, ep), name)
+        if (!installed.isFile) return false
+        val assetLen = try {
+            ctx.assets.open("game/${ep.id}/$name").use { ins ->
+                var total = 0L
+                val buf = ByteArray(8192)
+                while (true) {
+                    val r = ins.read(buf)
+                    if (r < 0) break
+                    total += r
+                }
+                total
+            }
+        } catch (e: Exception) {
+            return false
+        }
+        return installed.length() != assetLen
+    }
+
+    /**
      * Extracted/imported files get a FIXED old mtime, not "now". Save sync
      * compares newest-file mtimes across devices (newer wins), so a fresh
      * install stamped with the install time would look newer than a real save

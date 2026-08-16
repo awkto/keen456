@@ -28,30 +28,3 @@
              } else if (event->window.event == SDL_WINDOWEVENT_HIDDEN) {
                  renderer->hidden = SDL_TRUE;
              } else if (event->window.event == SDL_WINDOWEVENT_SHOWN) {
---- a/vs/sdl2/src/video/SDL_video.c
-+++ b/vs/sdl2/src/video/SDL_video.c
-@@ -503,6 +503,24 @@
-             SDL_Rect srcrect;
-             SDL_Rect *srcp = NULL;
-             SDL_GetRendererOutputSize(data->renderer, &ow, &oh);
-+            /* Re-assert the full-output viewport every present, from this
-+               thread (the queue's owner). Android's SDLSurface.surfaceChanged
-+               runs on the Java UI thread and lands in SDL_RendererEventWatch,
-+               which used to reset the viewport and queue its SETVIEWPORT
-+               command from that foreign thread, racing this one; a lost race
-+               left the GL viewport at a stale size — the picture drawn shifted
-+               up / cut off after an app switch — and QueueCmdSetViewport's
-+               dedup (last_queued_viewport already holds the right numbers)
-+               ensured it was never sent again. The 1x1 detour defeats that
-+               dedup so the command is genuinely queued and executed each
-+               frame; the cost is two tiny commands per present. The foreign-
-+               thread half of the race is disabled in SDL_render.c (same
-+               patch). */
-+            {
-+                SDL_Rect vp_poke = { 0, 0, 1, 1 };
-+                SDL_RenderSetViewport(data->renderer, &vp_poke);
-+                SDL_RenderSetViewport(data->renderer, NULL);
-+            }
-             if (ow > 0 && oh > 0 && w > 0 && h > 0) {
-                 /* display aspect if DOSBox-X supplied one, else pixel aspect */
-                 float sar = (dbx_content_aspect > 0.0)

@@ -111,10 +111,11 @@ class PickerActivity : Activity() {
         }
 
         list.addView(TextView(this).apply {
-            text = "Keen 4 shareware is included. Keen 5 and 6 are commercial — import " +
-                "your own game files (a folder or .zip holding KEEN5/6 .EXE and .CK5/.CK6 " +
-                "files), or configure save sync in-game (⚙ ▸ Sync) and fetch the copy the " +
-                "web app uploaded."
+            text = "Keen 4 shareware is included — own the registered version? Import its " +
+                "files to play the full game (your saves are kept). Keen 5 and 6 are " +
+                "commercial — import your own game files (a folder or .zip holding the " +
+                "KEEN .EXE and .CK files), or configure save sync in-game (⚙ ▸ Sync) and " +
+                "fetch the copy the web app uploaded."
             setTextColor(dim)
             textSize = 12f
             setPadding(0, dp(8), 0, 0)
@@ -143,7 +144,9 @@ class PickerActivity : Activity() {
             })
             addView(TextView(this@PickerActivity).apply {
                 text = when {
-                    ep.shareware -> "Shareware — included"
+                    ep.shareware && GameSetup.isFullVersion(this@PickerActivity, ep) ->
+                        "Registered version — your game files are installed"
+                    ep.shareware -> "Shareware — included · registered version can be imported"
                     ready -> "Your game files are installed"
                     else -> "Needs your game files"
                 }
@@ -167,7 +170,11 @@ class PickerActivity : Activity() {
             }
             if (ready) {
                 action("▶  Play", true) { play(ep) }
-                if (!ep.shareware) action("Re-import", false) { importInto(ep) }
+                // Keen 4's import is how the shareware becomes the registered
+                // version (its files replace the bundled ones, saves are kept).
+                action(if (ep.shareware) "Import full version" else "Re-import", false) {
+                    importInto(ep)
+                }
             } else {
                 action("Import files", true) { importInto(ep) }
                 if (syncOn) action("Fetch from sync", false) { fetchFromSync(ep) }
@@ -228,7 +235,16 @@ class PickerActivity : Activity() {
                             "\"which creature is this?\" manual question at startup. Drop a " +
                             "KEEN6C.EXE in and re-import to skip it."
                         else ""
-                        "Imported $n file(s) — Keen ${ep.num} is ready.$note"
+                        val k4note = when {
+                            !ep.shareware -> ""
+                            GameSetup.isFullVersion(this, ep) ->
+                                "\nRegistered version detected — the full game is installed."
+                            else ->
+                                "\nThe game data still matches the bundled shareware — if you " +
+                                "meant to install the registered version, check the folder " +
+                                "held its GAMEMAPS/EGAGRAPH/AUDIO .CK4 files."
+                        }
+                        "Imported $n file(s) — Keen ${ep.num} is ready.$note$k4note"
                     }
                     else -> "Imported $n file(s), but that doesn't look like Keen ${ep.num} " +
                         "(need KEEN${ep.num}*.EXE and *.CK${ep.num} files)."
@@ -246,11 +262,23 @@ class PickerActivity : Activity() {
     }
 
     /**
-     * Copy the picked folder's root files in. Existing files are never
-     * overwritten — they include the player's in-game saves (same rule as the
-     * desktop's CopyGameFiles). Source mtimes are preserved so a fresh import
-     * can't outrank a real save on the sync server; a source with no usable
-     * mtime gets the fixed old stamp.
+     * Whether an import may write this destination. Game files may be replaced
+     * — that's what turns the seeded Keen 4 shareware into the registered
+     * version, and what makes Re-import actually re-import for 5/6. The
+     * player's progress never is: SAVEGAM* (in-game saves) and CONFIG.* (game
+     * settings + high scores) are kept once they exist.
+     */
+    private fun importMayWrite(dest: File): Boolean {
+        if (!dest.exists()) return true
+        val u = dest.name.uppercase()
+        return !(u.startsWith("SAVEGAM") || u.startsWith("CONFIG."))
+    }
+
+    /**
+     * Copy the picked folder's root files in, under the importMayWrite rule.
+     * Source mtimes are preserved so a fresh import can't outrank a real save
+     * on the sync server; a source with no usable mtime gets the fixed old
+     * stamp.
      */
     private fun importTree(ep: Episode, uri: Uri): Int {
         val tree = DocumentFile.fromTreeUri(this, uri) ?: return 0
@@ -261,7 +289,7 @@ class PickerActivity : Activity() {
             if (!doc.isFile) continue
             val name = doc.name ?: continue
             val dest = File(dir, name)
-            if (dest.exists()) continue
+            if (!importMayWrite(dest)) continue
             contentResolver.openInputStream(doc.uri)?.use { input ->
                 dest.outputStream().use { input.copyTo(it) }
             } ?: continue
@@ -285,7 +313,7 @@ class PickerActivity : Activity() {
                         // Flatten: some zips nest the game in a folder. File()
                         // takes the basename, which also defuses zip-slip.
                         val dest = File(dir, File(e.name).name)
-                        if (!dest.exists()) {
+                        if (importMayWrite(dest)) {
                             dest.outputStream().use { zin.copyTo(it) }
                             dest.setLastModified(
                                 if (e.time > 0) e.time else GameSetup.ASSET_MTIME_MS)

@@ -1,8 +1,8 @@
 diff --git a/vs/sdl2/src/video/SDL_video.c b/vs/sdl2/src/video/SDL_video.c
-index 2f6c631..977ebef 100644
+index 2f6c631..40da23b 100644
 --- a/vs/sdl2/src/video/SDL_video.c
 +++ b/vs/sdl2/src/video/SDL_video.c
-@@ -227,6 +227,100 @@ static Uint32 SDL_DefaultGraphicsBackends(SDL_VideoDevice *_this)
+@@ -227,6 +227,115 @@ static Uint32 SDL_DefaultGraphicsBackends(SDL_VideoDevice *_this)
      return 0;
  }
  
@@ -100,10 +100,25 @@ index 2f6c631..977ebef 100644
 +    }
 +}
 +
++/* Present with vsync on Android: eglSwapBuffers blocks until the display's
++   vertical blank, which makes the present call the emulation loop's pacemaker.
++   DOSBox-X otherwise paces itself with 1ms SDL_Delay slices, and Android
++   oversleeps those by 10-25ms at will — frames come out in bursts with stalls
++   between (measured 8..42ms present intervals on a 60Hz display). With the
++   emulated refresh pinned to the display rate (the conf's [vsync] section) the
++   blocking present is a clean per-frame heartbeat that replaces sleep timing
++   entirely — the same structure that makes the wasm build smooth, where the
++   browser's vsync callback drives the emscripten main loop. */
++#ifdef __ANDROID__
++#define DBX_RENDERER_FLAGS SDL_RENDERER_PRESENTVSYNC
++#else
++#define DBX_RENDERER_FLAGS 0
++#endif
++
  static int SDL_CreateWindowTexture(SDL_VideoDevice *_this, SDL_Window *window, Uint32 *format, void **pixels, int *pitch)
  {
      SDL_RendererInfo info;
-@@ -234,7 +328,7 @@ static int SDL_CreateWindowTexture(SDL_VideoDevice *_this, SDL_Window *window, U
+@@ -234,7 +343,7 @@ static int SDL_CreateWindowTexture(SDL_VideoDevice *_this, SDL_Window *window, U
      int i;
      int w, h;
  
@@ -112,7 +127,25 @@ index 2f6c631..977ebef 100644
  
      if (!data) {
          SDL_Renderer *renderer = NULL;
-@@ -366,13 +460,33 @@ static int SDL_UpdateWindowTexture(SDL_VideoDevice *unused, SDL_Window *window,
+@@ -262,7 +371,7 @@ static int SDL_CreateWindowTexture(SDL_VideoDevice *_this, SDL_Window *window, U
+             for (i = 0; i < SDL_GetNumRenderDrivers(); ++i) {
+                 SDL_GetRenderDriverInfo(i, &info);
+                 if (SDL_strcasecmp(info.name, render_driver) == 0) {
+-                    renderer = SDL_CreateRenderer(window, i, 0);
++                    renderer = SDL_CreateRenderer(window, i, DBX_RENDERER_FLAGS);
+                     break;
+                 }
+             }
+@@ -275,7 +384,7 @@ static int SDL_CreateWindowTexture(SDL_VideoDevice *_this, SDL_Window *window, U
+             for (i = 0; i < SDL_GetNumRenderDrivers(); ++i) {
+                 SDL_GetRenderDriverInfo(i, &info);
+                 if (SDL_strcmp(info.name, "software") != 0) {
+-                    renderer = SDL_CreateRenderer(window, i, 0);
++                    renderer = SDL_CreateRenderer(window, i, DBX_RENDERER_FLAGS);
+                     if (renderer && (SDL_GetRendererInfo(renderer, &info) == 0) && (info.flags & SDL_RENDERER_ACCELERATED)) {
+                         break; /* this will work. */
+                     }
+@@ -366,13 +475,33 @@ static int SDL_UpdateWindowTexture(SDL_VideoDevice *unused, SDL_Window *window,
      void *src;
      int w, h;
  
@@ -147,7 +180,7 @@ index 2f6c631..977ebef 100644
      /* Update a single rect that contains subrects for best DMA performance */
      if (SDL_GetSpanEnclosingRect(w, h, numrects, rects, &rect)) {
          src = (void *)((Uint8 *)data->pixels +
-@@ -382,8 +496,76 @@ static int SDL_UpdateWindowTexture(SDL_VideoDevice *unused, SDL_Window *window,
+@@ -382,8 +511,94 @@ static int SDL_UpdateWindowTexture(SDL_VideoDevice *unused, SDL_Window *window,
              return -1;
          }
  
@@ -160,6 +193,24 @@ index 2f6c631..977ebef 100644
 +            SDL_Rect srcrect;
 +            SDL_Rect *srcp = NULL;
 +            SDL_GetRendererOutputSize(data->renderer, &ow, &oh);
++            /* Re-assert the full-output viewport every present, from this
++               thread (the queue's owner). Android's SDLSurface.surfaceChanged
++               runs on the Java UI thread and lands in SDL_RendererEventWatch,
++               which used to reset the viewport and queue its SETVIEWPORT
++               command from that foreign thread, racing this one; a lost race
++               left the GL viewport at a stale size — the picture drawn shifted
++               up / cut off after an app switch — and QueueCmdSetViewport's
++               dedup (last_queued_viewport already holds the right numbers)
++               ensured it was never sent again. The 1x1 detour defeats that
++               dedup so the command is genuinely queued and executed each
++               frame; the cost is two tiny commands per present. The foreign-
++               thread half of the race is disabled in SDL_render.c (same
++               patch). */
++            {
++                SDL_Rect vp_poke = { 0, 0, 1, 1 };
++                SDL_RenderSetViewport(data->renderer, &vp_poke);
++                SDL_RenderSetViewport(data->renderer, NULL);
++            }
 +            if (ow > 0 && oh > 0 && w > 0 && h > 0) {
 +                /* display aspect if DOSBox-X supplied one, else pixel aspect */
 +                float sar = (dbx_content_aspect > 0.0)
@@ -226,7 +277,7 @@ index 2f6c631..977ebef 100644
          }
  
          SDL_RenderPresent(data->renderer);
-@@ -2715,7 +2897,7 @@ static SDL_Surface *SDL_CreateWindowFramebuffer(SDL_Window *window)
+@@ -2715,7 +2930,7 @@ static SDL_Surface *SDL_CreateWindowFramebuffer(SDL_Window *window)
      SDL_bool created_framebuffer = SDL_FALSE;
      int w, h;
  

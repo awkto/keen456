@@ -1,8 +1,8 @@
 diff --git a/src/output/output_surface.cpp b/src/output/output_surface.cpp
-index 2943916..ea9a7fa 100644
+index 2943916..313ac57 100644
 --- a/src/output/output_surface.cpp
 +++ b/src/output/output_surface.cpp
-@@ -51,6 +51,14 @@ void OUTPUT_SURFACE_Select()
+@@ -51,6 +51,72 @@ void OUTPUT_SURFACE_Select()
  #endif
  }
  
@@ -12,12 +12,70 @@ index 2943916..ea9a7fa 100644
 +extern "C" void SDL_DBX_SetContentSize(int w, int h);
 +extern "C" void SDL_DBX_SetContentAspect(double aspect);
 +extern "C" void SDL_DBX_InvalidateWindowSurface(SDL_Window *window);
++
++/* Present pacing telemetry, written to last-run.log every ~5s of animation.
++   interval = wall time between presents. Smooth play is this sitting at the
++   display period (16.7ms on 60Hz) with a tight min/max; judder is a wide
++   spread. inside = time spent in the present call itself (texture upload +
++   GPU blit + the vsync wait now that presents are SDL_RENDERER_PRESENTVSYNC).
++   These are the numbers to ask a stuttering device for. */
++#include <unistd.h>
++#include <sys/resource.h>
++static struct {
++    double last = 0.0, iv_sum = 0.0, iv_min = 1e9, iv_max = 0.0;
++    double in_sum = 0.0, in_max = 0.0;
++    unsigned n = 0;
++} dbx_present_stats;
++
++static inline double dbx_now_ms(void) {
++    return (double)SDL_GetPerformanceCounter() * 1000.0 / (double)SDL_GetPerformanceFrequency();
++}
++
++static void dbx_present_account(double t0, double t1) {
++    auto &s = dbx_present_stats;
++    if (s.last > 0.0) {
++        double iv = t0 - s.last;
++        s.iv_sum += iv;
++        if (iv < s.iv_min) s.iv_min = iv;
++        if (iv > s.iv_max) s.iv_max = iv;
++        double in = t1 - t0;
++        s.in_sum += in;
++        if (in > s.in_max) s.in_max = in;
++        s.n++;
++    }
++    s.last = t0;
++    if (s.n >= 300) {
++        LOG_MSG("android present: %u frames, interval avg=%.1f min=%.1f max=%.1f ms, inside avg=%.1f max=%.1f ms",
++                s.n, s.iv_sum / s.n, s.iv_min, s.iv_max, s.in_sum / s.n, s.in_max);
++        s.iv_sum = s.in_sum = s.iv_max = s.in_max = 0.0;
++        s.iv_min = 1e9;
++        s.n = 0;
++    }
++}
++
++static int DBX_TimedUpdateWindowSurface(SDL_Window *win) {
++    double t0 = dbx_now_ms();
++    int r = SDL_UpdateWindowSurface(win);
++    dbx_present_account(t0, dbx_now_ms());
++    return r;
++}
++
++static int DBX_TimedUpdateWindowSurfaceRects(SDL_Window *win, const SDL_Rect *rects, int numrects) {
++    double t0 = dbx_now_ms();
++    int r = SDL_UpdateWindowSurfaceRects(win, rects, numrects);
++    dbx_present_account(t0, dbx_now_ms());
++    return r;
++}
++
++/* Every present in the rest of this file goes through the timed wrappers. */
++#define SDL_UpdateWindowSurface(w) DBX_TimedUpdateWindowSurface(w)
++#define SDL_UpdateWindowSurfaceRects(w, r, n) DBX_TimedUpdateWindowSurfaceRects(w, r, n)
 +#endif
 +
  #if defined(C_SDL2)
  Bitu OUTPUT_SURFACE_SetSize()
  {
-@@ -130,6 +138,32 @@ Bitu OUTPUT_SURFACE_SetSize()
+@@ -130,6 +196,46 @@ Bitu OUTPUT_SURFACE_SetSize()
          }
  #endif
  
@@ -26,6 +84,20 @@ index 2943916..ea9a7fa 100644
 +           surface; the vendored SDL2 then aspect-fits that whole surface onto
 +           the full display on the GPU (no per-frame CPU upscale). The window
 +           itself stays full-display size (see GFX_SetSDLWindowMode). */
++        /* This runs on the emulation thread. Raise it to Android's "display"
++           priority (nice -4, what Chrome's rendering threads run at — part of
++           why the WebView build never stutters) so frame generation isn't
++           preempted by ordinary background work. Allowed for the app's own
++           threads; if the kernel refuses, play on at default. */
++        static bool dbx_prio_done = false;
++        if (!dbx_prio_done) {
++            dbx_prio_done = true;
++            if (setpriority(PRIO_PROCESS, (id_t)gettid(), -4) == 0)
++                LOG_MSG("android: emulation thread priority raised to -4");
++            else
++                LOG_MSG("android: emulation thread priority unchanged (%s)", strerror(errno));
++        }
++
 +        int final_width  = (int)width;
 +        int final_height = (int)height + (int)menuheight;
 +        sdl.clip.x = 0;
@@ -50,7 +122,7 @@ index 2943916..ea9a7fa 100644
          /* decide where the rectangle on the screen goes */
          int final_width,final_height;
  
-@@ -189,6 +223,7 @@ Bitu OUTPUT_SURFACE_SetSize()
+@@ -189,6 +295,7 @@ Bitu OUTPUT_SURFACE_SetSize()
              if (sdl.window == NULL)
                  E_Exit("Could not set windowed video mode %ix%i: %s", (int)sdl.draw.width, (int)sdl.draw.height, SDL_GetError());
          }
