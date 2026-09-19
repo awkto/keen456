@@ -126,12 +126,12 @@ class KeenActivity : SDLActivity() {
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // The emulator renders at exactly 60fps (the conf template's [vsync]
-        // section pins the emulated vertical timer there). Declare that so the
-        // system picks a display mode 60 divides evenly — on 60/120Hz panels
-        // this changes nothing, on 90Hz panels it switches to the 60Hz mode
-        // instead of showing 60fps content on a 90Hz cadence (2:1:2 judder).
-        window.attributes = window.attributes.apply { preferredRefreshRate = 60f }
+        // Keen emits 35fps (PIT-timed, see the conf template), which no panel
+        // rate divides — so the faster the panel, the finer the grid each frame
+        // snaps to and the more even the cadence: 16.7/33.3ms at 60Hz, 22/33ms
+        // at 90Hz, 25/33ms at 120Hz. Ask for the fastest mode at the current
+        // resolution; left alone, some devices hold full-screen apps at 60Hz.
+        requestFastestDisplayMode()
 
         val fillParent = {
             ViewGroup.LayoutParams(
@@ -460,6 +460,21 @@ class KeenActivity : SDLActivity() {
      * and both overlays re-lay-out from the new size, and the controls region
      * absorbs the lost height (the game pane's height only depends on width).
      */
+    /**
+     * Pin the panel to its fastest refresh rate at the resolution it is already
+     * in. preferredDisplayModeId rather than preferredRefreshRate: the latter
+     * is a hint the system may round to a "compatible" slower mode.
+     */
+    private fun requestFastestDisplayMode() {
+        val d = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display
+                else @Suppress("DEPRECATION") windowManager.defaultDisplay
+        val cur = d?.mode ?: return
+        val best = d.supportedModes
+            .filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight }
+            .maxByOrNull { it.refreshRate } ?: return
+        window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
+    }
+
     private fun applySystemBars() {
         val on = getSharedPreferences("keen456", MODE_PRIVATE).getBoolean("fullscreen", true)
         if (on) {

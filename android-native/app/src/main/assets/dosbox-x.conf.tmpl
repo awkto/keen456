@@ -40,20 +40,19 @@ aspect=false
 # pixels setting bites (SDL_RENDER_SCALE_QUALITY, Settings ▸ Pixels).
 scaler=none
 
-[vsync]
-# The mode Keen runs in is ~70.09Hz on real VGA, but phone displays are 60Hz
-# (or a multiple). Left at 70, DOSBox-X pushes 70 frames/s at a display that
-# shows 60 — a frame is dropped every ~100ms (visible judder in scrolling) and
-# the excess presents back-pressure the emulation thread through the display's
-# buffer queue, which jitters game timing on top. The wasm app never feels
-# this because the browser compositor vsync-paces its canvas. Forcing the
-# emulated vertical timer to 60Hz makes frame generation match the display
-# 1:1: every present lands on its own refresh. Game speed is unaffected —
-# Keen's logic runs off the PIT timer and adapts tics per frame. Patch 0009
-# keeps the drift compensator honest at the forced rate; KeenActivity asks
-# Android for a 60Hz-compatible display mode to cover 90Hz panels.
-vsyncmode=on
-vsyncrate=60
+# No [vsync] section, deliberately. v1.0.2/3 pinned the emulated vertical timer
+# to 60Hz here — zeliard's fix, and right for zeliard, which generates 70
+# frames/s. Keen does not: its loop is PIT-timed (70Hz tics, two per frame), so
+# it emits 35fps at any CPU speed, and at the native ~70.09Hz VGA rate those
+# frames are exactly two vblanks apart. Pinned to 60 the same frames latch 1-2-2
+# vblanks apart (measured: 27% / 69%) — a 16.7/33.3ms stutter built in before
+# the display is even involved. native/bench-cadence.sh measures this.
+#
+# Left at 70 nothing floods the display either: the surface output presents
+# only frames whose content changed (~35/s), each at the next host vsync
+# (patch 0006), so the panel's own rate sets the cadence — 25/33ms at 120Hz,
+# and at 60Hz the same 16.7/33.3ms the web build shows. KeenActivity asks for
+# the panel's fastest mode for that reason.
 
 [log]
 # Written unbuffered, so it survives a crash or a kill. This is the file to ask
