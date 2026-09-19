@@ -1,0 +1,52 @@
+diff --git a/src/output/output_opengl.cpp b/src/output/output_opengl.cpp
+index f3b2a55..a11ba68 100644
+--- a/src/output/output_opengl.cpp
++++ b/src/output/output_opengl.cpp
+@@ -1001,6 +1001,38 @@ static void CheckManagement(void) {
+ 	CheckMenuDrawing();
+ }
+ 
++/* Keen present telemetry (keen456/native): what the display path really did
++   on this machine, because it cannot be seen from a build box. Every buffer
++   swap is timed; every 600 of them (about 17s of play) one line goes to the
++   log. Keen makes a frame every 28.6ms, so a healthy run reads interval
++   avg=28.6 with nearly everything in the 20-30 bucket. "in swap" is how long
++   the swap held the emulator: ~0 unsynced, up to a refresh or two with vsync.
++   Intervals over 500ms (pauses, menus, level loads) are left out. */
++static void Keen_TimedSwap(void) {
++    static unsigned n = 0, h[6] = {0,0,0,0,0,0};
++    static double last = 0, sumI = 0, minI = 1e9, maxI = 0, sumIn = 0, maxIn = 0;
++    const double f = 1000.0 / (double)SDL_GetPerformanceFrequency();
++    const double t0 = (double)SDL_GetPerformanceCounter() * f;
++    SDL_GL_SwapBuffers();
++    const double t1 = (double)SDL_GetPerformanceCounter() * f;
++    if (last > 0 && (t1 - last) < 500.0) {
++        const double iv = t1 - last, in = t1 - t0;
++        n++; sumI += iv; sumIn += in;
++        if (iv < minI) minI = iv;
++        if (iv > maxI) maxI = iv;
++        if (in > maxIn) maxIn = in;
++        h[iv < 10 ? 0 : iv < 20 ? 1 : iv < 30 ? 2 : iv < 40 ? 3 : iv < 60 ? 4 : 5]++;
++    }
++    last = t1;
++    if (n >= 600) {
++        LOG_MSG("Keen present: %u frames, interval avg=%.2f min=%.1f max=%.1f ms, in swap avg=%.1f max=%.1f ms, "
++                "ms buckets <10:%u 10-20:%u 20-30:%u 30-40:%u 40-60:%u >60:%u",
++                n, sumI / n, minI, maxI, sumIn / n, maxIn, h[0], h[1], h[2], h[3], h[4], h[5]);
++        n = 0; sumI = sumIn = maxI = maxIn = 0; minI = 1e9;
++        for (int i = 0; i < 6; i++) h[i] = 0;
++    }
++}
++
+ void OUTPUT_OPENGL_EndUpdate(const uint16_t *changedLines)
+ {
+     if (!(sdl.must_redraw_all && changedLines == NULL)) 
+@@ -1176,7 +1208,7 @@ void OUTPUT_OPENGL_EndUpdate(const uint16_t *changedLines)
+ 	/* Keen: volume bar / MUTE / toast, over the finished frame. */
+ 	Keen_OverlayDrawOSD();
+ 
+-	SDL_GL_SwapBuffers();
++	Keen_TimedSwap();
+ 
+         if (!menu.hidecycles && !sdl.desktop.fullscreen) frames++;
+     }

@@ -235,7 +235,11 @@ func main() {
 	// - = *) — all drawn and handled by the patched DOSBox-X.
 	cmd.Env = append(cmd.Env, settings.TurboEnv()...)
 	cmd.Env = append(cmd.Env, overlayEnv(data, ep, settings)...)
-	if settings.Vsync {
+	// vsync = on: tear-free presents (patch 06). Off by default: a vsync'd
+	// swap holds the emulator for a refresh or two per frame, and measured
+	// motion is most even without it. It is there for desktops with no
+	// compositor, where unsynced presents tear.
+	if settings.Vsync && settings.UsesGLShader() {
 		cmd.Env = append(cmd.Env, "KEEN_GL_VSYNC=1")
 	}
 

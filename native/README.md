@@ -116,7 +116,7 @@ the game to apply):
 | `rendering` | `smooth` (blurred/bilinear) / `crisp` (sharp pixels) | `smooth` |
 | `filter` | `none` / `scanlines` / `soft` / `soft-scanlines` / `crt` / `crt-curved`, or **any DOSBox-X shader** (`scan3x`, `tv2x`, `advmame2x`, … or a path to your own `.glsl`) — non-`none` overrides `rendering` | `scanlines` |
 | `output` | `opengl` / `openglnb` / `surface` — DOSBox-X video output; filters, the menu and the volume bar need an opengl one | `opengl` |
-| `vsync` | on / off — tear-free presents (GL swap interval). Never changes the emulated video timing — see *Frame pacing* | `on` |
+| `vsync` | off / on — present on the display's refresh. Leave off on a composited desktop (most even motion); on only if scrolling tears. Never changes the emulated video timing — see *Frame pacing* | `off` |
 | `turbo_key` | `shift` / `tab` / `f` / `off` — hold to fast-forward | `shift` |
 | `turbo_frameskip` | 0–10 frames skipped per frame drawn while turbo is held | `6` |
 | `pause_key` | `f11` / `pause` / `b` / `off` | `f11` |
@@ -284,6 +284,8 @@ leave behind:
 | `04-pause-key` | one-press pause that survives auto-repeat, repaints when re-exposed, and drops keys mashed while paused |
 | `05-keen-overlay` | the `Tab` menu and the volume / mute OSD, drawn by the emulator on the game's own window (OpenGL outputs only) |
 | `06-gl-vsync` | GL swap interval 1 **without** `vsyncmode` — see below |
+| `07-catchup-cap` | stalls over 20ms no longer cost game time — see below |
+| `08-present-telemetry` | times every buffer swap and logs a `Keen present:` line every 600 frames |
 
 03–05 are ports of zeliard-wasm's `attack-keys` (turbo half), `pause-key` and
 `zeliard-overlay` patches against the same pinned DOSBox-X.
@@ -299,10 +301,33 @@ the native ~70.09Hz. Forcing 60Hz turns that even cadence into 27% one-vblank /
 involved. `bench-cadence.sh` measures it (and showed `cycles` make no
 difference, which is why they are still `auto`).
 
-So the VGA rate is left alone and only the *present* is synced: DOSBox-X's
-OpenGL output asks for swap interval 1 solely under `vsyncmode=host`, which also
-forces the rate, so `06-gl-vsync` asks for it on its own. It costs no
-throughput — the output only swaps frames whose content changed, ~35 a second.
+So the VGA rate is left alone. `06-gl-vsync` can sync the *present* on its own
+(DOSBox-X only asks for swap interval 1 under `vsyncmode=host`, which also
+forces the rate) — but it is **off by default**, because of what 1.1.0 taught:
+
+**The 20ms cap.** DOSBox-X's main loop catches up on elapsed wall time, caps the
+catch-up at 20ms and *drops* the rest — emulated time that never happens. A
+vsync'd swap on a real driver blocks for one to two refreshes (17–33ms at
+60Hz), so with vsync on, 1.1.0 lost game time on nearly every frame: measured
+30.6fps where Keen makes 35, felt as "smooth, then it drops and lags,
+constantly". `07-catchup-cap` raises the cap to 100ms (emulating 100ms of Keen
+costs under 1ms, so there is nothing to spiral). It helps vsync-off as well:
+any compositor hiccup over 20ms used to be a visible hitch.
+
+**What was measured** (a preload shim that stands in for a display, since the
+build box has none — a swap that blocks like a real driver's, at 59.95 and
+74.75Hz; and the browser build instrumented in headless Chrome): the browser
+build shows the same 35fps and the same 29% one-refresh / 71% two-refresh
+frames as native — that split is simply what 35fps is on 60Hz. Vsync off is the
+most even native mode (7% of 7-frame windows off the ideal pattern); vsync on
+with the cap fixed is 25%; 1.1.0's vsync on was 98%. A display-locked main loop
+in the browser build's image was built and measured too, and was no more even
+than plain vsync-off, so it was not kept.
+
+**On a real machine**, `grep -a 'Keen present' ~/.local/share/keen456/last-run.log`
+says what the display path did: `interval avg` should be ~28.6ms with nearly
+everything in the 20–30 bucket; `in swap` is how long presents held the
+emulator (≈0 with vsync off).
 
 ## Release
 

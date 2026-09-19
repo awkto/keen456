@@ -98,7 +98,7 @@ func (u *ui) build() fyne.CanvasObject {
 
 	u.output = widget.NewSelect([]string{"opengl", "openglnb", "surface"}, nil)
 	u.output.SetSelected(u.set.OutputMode())
-	u.vsync = widget.NewCheck("Tear-free (sync each frame to the display)", nil)
+	u.vsync = widget.NewCheck("Only if scrolling tears (costs some smoothness)", nil)
 	u.vsync.SetChecked(u.set.Vsync)
 
 	u.turboKey = widget.NewSelect([]string{"shift", "tab", "f", "off"}, nil)

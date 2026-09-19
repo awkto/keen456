@@ -24,7 +24,7 @@ type Settings struct {
 	Rendering string // smooth | crisp
 	Filter    string // none | scanlines | soft | soft-scanlines | crt | crt-curved | any shader
 	Output    string // opengl | openglnb | surface — DOSBox-X video output
-	Vsync     bool   // tear-free presents (GL swap interval 1); never touches the VGA rate
+	Vsync     bool   // tear-free presents (GL swap interval 1); off by default; never touches the VGA rate
 
 	TurboKey       string // shift | tab | f | off — hold to fast-forward
 	TurboFrameskip int    // 0..10 frames skipped per frame drawn while turbo is held
@@ -48,7 +48,7 @@ func DefaultSettings() Settings {
 		Rendering: "smooth",
 		Filter:    "scanlines",
 		Output:    "opengl",
-		Vsync:     true,
+		Vsync:     false,
 
 		TurboKey:       "shift",
 		TurboFrameskip: defaultTurboFrameskip,
@@ -186,10 +186,12 @@ filter = ` + s.Filter + `
 #   An escape hatch for when a driver's OpenGL is the thing misbehaving. Only
 #   the opengl family can run a filter, the Tab menu and the volume bar; under
 #   surface those are unavailable (the keys for volume still work).
-# vsync: on/off — present each frame on the display's refresh, so scrolling
-#   does not tear. It never changes the emulated video timing: Keen's frames
-#   stay evenly paced at the game's own 35 a second. Turn off only if a driver
-#   makes the game feel laggy with it on.
+# vsync: off (default) / on — present each frame on the display's refresh.
+#   Leave it off on a normal (composited) desktop: motion is most even that
+#   way, and the desktop already keeps the picture from tearing. Turn it on
+#   only if scrolling visibly tears — it costs some evenness, because the
+#   emulator waits on the display for every frame.
+#   Neither setting changes the emulated video timing.
 output = ` + s.OutputMode() + `
 vsync = ` + onOff(s.Vsync) + `
 

@@ -10,13 +10,13 @@ import (
 func TestSettingsRoundTripNewKeys(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	s := DefaultSettings()
-	s.Output, s.Vsync = "surface", false
+	s.Output, s.Vsync = "surface", true
 	s.TurboKey, s.TurboFrameskip, s.PauseKey = "tab", 3, "pause"
 	if err := Save(s); err != nil {
 		t.Fatal(err)
 	}
 	got := Load()
-	if got.Output != "surface" || got.Vsync || got.TurboKey != "tab" ||
+	if got.Output != "surface" || !got.Vsync || got.TurboKey != "tab" ||
 		got.TurboFrameskip != 3 || got.PauseKey != "pause" {
 		t.Fatalf("round trip lost a key: %+v", got)
 	}
@@ -32,7 +32,8 @@ func TestDefaultsAreKeenSafe(t *testing.T) {
 	if s.TurboKeyName() != "shift" {
 		t.Errorf("turbo key default = %q, want shift", s.TurboKeyName())
 	}
-	if !s.Vsync || s.OutputMode() != "opengl" {
+	// Off: measured motion is most even without a blocking swap per frame.
+	if s.Vsync || s.OutputMode() != "opengl" {
 		t.Errorf("display defaults: vsync=%v output=%q", s.Vsync, s.OutputMode())
 	}
 	for _, bad := range []string{"ctrl", "alt", "space", ""} {
