@@ -66,12 +66,23 @@ desktop entry has an action per episode.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl + .` | quick-save state (instant, slot 1) |
+| `Tab` | **in-game menu** over the paused game: save / load state with a slot picker, volume, mute, video filter, fullscreen, a controls sheet, back up saves, the settings window, quit |
+| `Shift` (hold) | turbo — fast-forward while held (`turbo_key`) |
+| `F11` | pause / resume the emulator (`pause_key`; Keen's own pause is still `P`) |
+| `-` / `=` | volume down / up, with a bar along the bottom of the picture; remembered between runs |
+| `*` (or `Shift + 8`) | mute |
+| `Ctrl + .` | quick-save state (instant, current slot) |
 | `Ctrl + \` | quick-load state |
 | `Alt` (hold) | pogo + jump super-bounce; releasing retracts the pogo |
-| `Tab` (hold) | turbo — fast-forward the emulation while held |
 | `F` | fullscreen toggle (aspect-correct, pillarboxed) |
 | `V` | cycle video filter: none → scanlines → soft → soft-scanlines → crt → crt-curved (session-only; `settings.ini` keeps the startup default) |
+
+The menu, the volume bar, turbo and pause came from `zeliard-wasm/native` in
+1.1.0. Two things are deliberately different from zeliard: pause is `F11`, not
+`B` (the pause key never reaches the game, and Keen needs `B` for save-game
+names and the B-A-T cheat), and there is no `M` map viewer (Keen ships no maps,
+and `M` is a letter too). Turbo moved from `Tab` to `Shift` to make room for the
+menu; set `turbo_key = tab` to have it back, and the menu moves to `` ` ``.
 
 `Ctrl` is Keen's Jump, so `Ctrl + .` fires a save state mid-jump. That is
 already how the web build behaves; parity wins over tidiness.
@@ -81,7 +92,7 @@ because a state is a snapshot of one running program. More slots via the
 DOSBox-X menu (Capture → Save/Load state).
 
 Desktop pogo is implemented inside the bundled DOSBox-X
-(`patches/desktop-pogo.patch`): holding Alt already gives Keen the pogo, so the
+(`patches/01-desktop-pogo.patch`): holding Alt already gives Keen the pogo, so the
 patch injects **Jump** ~30 ms later for the super-bounce and, when Alt was held
 past `pogo_hold`, taps Alt once more on release to retract the pogo. It feeds
 the *emulated* keyboard, so it works identically on X11 and Wayland with no
@@ -104,6 +115,11 @@ the game to apply):
 | `pogo_hold` | ms Alt must be held before the auto-retract tap, or `off` | `180` |
 | `rendering` | `smooth` (blurred/bilinear) / `crisp` (sharp pixels) | `smooth` |
 | `filter` | `none` / `scanlines` / `soft` / `soft-scanlines` / `crt` / `crt-curved`, or **any DOSBox-X shader** (`scan3x`, `tv2x`, `advmame2x`, … or a path to your own `.glsl`) — non-`none` overrides `rendering` | `scanlines` |
+| `output` | `opengl` / `openglnb` / `surface` — DOSBox-X video output; filters, the menu and the volume bar need an opengl one | `opengl` |
+| `vsync` | on / off — tear-free presents (GL swap interval). Never changes the emulated video timing — see *Frame pacing* | `on` |
+| `turbo_key` | `shift` / `tab` / `f` / `off` — hold to fast-forward | `shift` |
+| `turbo_frameskip` | 0–10 frames skipped per frame drawn while turbo is held | `6` |
+| `pause_key` | `f11` / `pause` / `b` / `off` | `f11` |
 | `sync` | on / off — server-side save sync | `off` |
 | `sync_base` | URL of a keen456 container (e.g. `https://keen456.example.com/`) | *(empty)* |
 | `sync_key` | web-style save key (e.g. `AWKX`) — links this device to an existing web save | *(empty)* |
@@ -256,13 +272,37 @@ episode data ever ends up inside the package.
 
 Requires: docker (compiles DOSBox-X and the Fyne GUI in Debian 12 containers —
 slow the first time, cached in `native/vendor/` after), go, unzip, curl.
-The DOSBox-X build applies `patches/*.patch` before compiling, in glob order:
-desktop-pogo (the one feature with no vanilla equivalent) and then
-filter-cycle, which binds a bare `V` to the shader switch DOSBox-X already
-exposes via its own menu and `CONFIG -set` — the mapper has no such action.
-Everything else — save states, turbo, key remaps, filters, sync — is vanilla
-DOSBox-X driven by the conf and mapper files. Later patches are diffed against
-the earlier-patches-applied tree — order matters.
+The DOSBox-X build applies `patches/*.patch` before compiling, in glob order —
+hence the numeric prefixes; each is diffed against the tree the earlier ones
+leave behind:
+
+| Patch | What |
+|---|---|
+| `01-desktop-pogo` | Alt super-bounce + auto-retract. Shared with the Android build. |
+| `02-filter-cycle` | bare `V` cycles the glshader list |
+| `03-turbo-key` | turbo read from key *state* each pass (a mapper-bound turbo misses holds), with frameskip for the duration of the hold |
+| `04-pause-key` | one-press pause that survives auto-repeat, repaints when re-exposed, and drops keys mashed while paused |
+| `05-keen-overlay` | the `Tab` menu and the volume / mute OSD, drawn by the emulator on the game's own window (OpenGL outputs only) |
+| `06-gl-vsync` | GL swap interval 1 **without** `vsyncmode` — see below |
+
+03–05 are ports of zeliard-wasm's `attack-keys` (turbo half), `pause-key` and
+`zeliard-overlay` patches against the same pinned DOSBox-X.
+
+### Frame pacing — why this is not zeliard's fix
+
+zeliard paces itself by forcing the emulated vertical timer to a divisor of the
+display rate (`[vsync] vsyncmode=on`). That is right for a game that draws 70
+frames a second and **wrong for Keen**: Keen's loop is PIT-timed — 70Hz tics,
+two per frame — so it emits 35fps at any CPU speed, exactly two vblanks apart at
+the native ~70.09Hz. Forcing 60Hz turns that even cadence into 27% one-vblank /
+69% two-vblank frames, a 16.7/33.3ms stutter built in before the display is
+involved. `bench-cadence.sh` measures it (and showed `cycles` make no
+difference, which is why they are still `auto`).
+
+So the VGA rate is left alone and only the *present* is synced: DOSBox-X's
+OpenGL output asks for swap interval 1 solely under `vsyncmode=host`, which also
+forces the rate, so `06-gl-vsync` asks for it on its own. It costs no
+throughput — the output only swaps frames whose content changed, ~35 a second.
 
 ## Release
 
@@ -292,7 +332,8 @@ launcher/            Go launcher -> AppRun and /usr/bin/keen456 (no deps)
 launcher/core/       settings, paths, episodes and the sync client
 gui/                 keen456-gui: the Fyne settings window (separate module)
 appdir/              static assets (dosbox-x.conf template, shaders, .desktop)
-patches/             DOSBox-X source patches (desktop pogo, V filter cycle)
+patches/             DOSBox-X source patches, applied in numeric order (see Building)
+bench-cadence.sh     frame-cadence benchmark: is Keen still emitting an even 35fps?
 ```
 
 Keen 4's game files come from the same `games/keen4.jsdos` bundle the WASM

@@ -46,8 +46,12 @@ type ui struct {
 
 	filter    *widget.Select
 	rendering *widget.Select
+	output    *widget.Select
+	vsync     *widget.Check
 	pogo      *widget.Check
 	pogoHold  *widget.Entry
+	turboKey  *widget.Select
+	pauseKey  *widget.Select
 
 	sync      *widget.Check
 	server    *widget.Entry
@@ -92,6 +96,16 @@ func (u *ui) build() fyne.CanvasObject {
 	}
 	u.rendering.SetSelected(u.set.Rendering)
 
+	u.output = widget.NewSelect([]string{"opengl", "openglnb", "surface"}, nil)
+	u.output.SetSelected(u.set.OutputMode())
+	u.vsync = widget.NewCheck("Tear-free (sync each frame to the display)", nil)
+	u.vsync.SetChecked(u.set.Vsync)
+
+	u.turboKey = widget.NewSelect([]string{"shift", "tab", "f", "off"}, nil)
+	u.turboKey.SetSelected(u.set.TurboKeyName())
+	u.pauseKey = widget.NewSelect([]string{"f11", "pause", "b", "off"}, nil)
+	u.pauseKey.SetSelected(u.set.PauseKeyName())
+
 	u.pogo = widget.NewCheck("Holding Alt does the Pogo+Jump super-bounce", nil)
 	u.pogo.SetChecked(u.set.Pogo)
 	u.pogoHold = widget.NewEntry()
@@ -115,12 +129,24 @@ func (u *ui) build() fyne.CanvasObject {
 	display := widget.NewForm(
 		widget.NewFormItem("Video filter", u.filter),
 		widget.NewFormItem("Pixels", u.rendering),
+		widget.NewFormItem("Video output", u.output),
+		widget.NewFormItem("Vsync", u.vsync),
 	)
+	outputNote := widget.NewLabel("Filters, the Tab menu and the volume bar need an opengl output; " +
+		"surface is the fallback for a misbehaving GL driver.")
+	outputNote.Wrapping = fyne.TextWrapWord
 	controls := widget.NewForm(
 		widget.NewFormItem("Desktop pogo", u.pogo),
 		widget.NewFormItem("Auto-retract after", container.NewBorder(nil, nil, nil,
 			widget.NewLabel("ms held"), u.pogoHold)),
+		widget.NewFormItem("Turbo (hold)", u.turboKey),
+		widget.NewFormItem("Pause key", u.pauseKey),
 	)
+	keysNote := widget.NewLabel("In game: Tab opens the menu (save/load state, volume, filter, " +
+		"fullscreen, controls). - and = change the volume, * mutes. " +
+		"With turbo on Tab the menu moves to the ` key. B as the pause key " +
+		"never reaches Keen, so it cannot be typed into a save name.")
+	keysNote.Wrapping = fyne.TextWrapWord
 
 	return container.NewBorder(nil, u.buttons(), nil, nil,
 		container.NewVScroll(container.NewVBox(
@@ -129,9 +155,9 @@ func (u *ui) build() fyne.CanvasObject {
 			widget.NewSeparator(),
 			section("Game files"), u.gameFilesBox(),
 			widget.NewSeparator(),
-			section("Display"), display,
+			section("Display"), display, outputNote,
 			widget.NewSeparator(),
-			section("Controls"), controls,
+			section("Controls"), controls, keysNote,
 			widget.NewSeparator(),
 			section("Save sync"), u.syncBox(),
 		)),
@@ -476,6 +502,10 @@ func (u *ui) collect() core.Settings {
 	}
 	s.Filter = u.filter.Selected
 	s.Rendering = u.rendering.Selected
+	s.Output = u.output.Selected
+	s.Vsync = u.vsync.Checked
+	s.TurboKey = u.turboKey.Selected
+	s.PauseKey = u.pauseKey.Selected
 	s.Pogo = u.pogo.Checked
 	switch h := strings.TrimSpace(u.pogoHold.Text); h {
 	case "off":

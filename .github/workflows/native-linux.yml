@@ -62,6 +62,9 @@ jobs:
             echo "version=0.0.0" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Launcher tests
+        run: cd native/launcher && go test ./...
+
       - name: Build AppImage
         run: ./native/build.sh
 

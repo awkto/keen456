@@ -33,7 +33,7 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-func writeConf(tmplPath, confPath, gameDir, dataDir, runCmd, glshader string) error {
+func writeConf(tmplPath, confPath, gameDir, dataDir, runCmd, glshader string, settings core.Settings) error {
 	tmpl, err := os.ReadFile(tmplPath)
 	if err != nil {
 		return err
@@ -41,7 +41,15 @@ func writeConf(tmplPath, confPath, gameDir, dataDir, runCmd, glshader string) er
 	conf := strings.ReplaceAll(string(tmpl), "${GAME_DIR}", gameDir)
 	conf = strings.ReplaceAll(conf, "${DATA_DIR}", dataDir)
 	conf = strings.ReplaceAll(conf, "${RUNCMD}", runCmd)
-	conf = strings.ReplaceAll(conf, "${GLSHADER}", glshader)
+	// Only the opengl outputs can run a glshader. Under any other mode say so
+	// in the conf instead of writing a line DOSBox-X would ignore — a filter
+	// that silently stops working reads as a bug.
+	shaderLine := "glshader=" + glshader
+	if !settings.UsesGLShader() {
+		shaderLine = "# glshader: not available with output=" + settings.OutputMode()
+	}
+	conf = strings.ReplaceAll(conf, "${GLSHADER_LINE}", shaderLine)
+	conf = strings.ReplaceAll(conf, "${OUTPUT}", settings.OutputMode())
 	return os.WriteFile(confPath, []byte(conf), 0o644)
 }
 
@@ -171,10 +179,11 @@ func main() {
 		fatal(err)
 	}
 	if err := writeConf(filepath.Join(share, "dosbox-x.conf.tmpl"), confPath,
-		src.Dir, data, strings.ToUpper(runCmd), settings.GLShader(shaderDir)); err != nil {
+		src.Dir, data, strings.ToUpper(runCmd), settings.GLShader(shaderDir), settings); err != nil {
 		fatal(fmt.Errorf("writing %s: %w", confPath, err))
 	}
-	// Mapper: Ctrl+. / Ctrl+\ save/load state, F fullscreen, Tab (hold) turbo.
+	// Mapper: Ctrl+. / Ctrl+\ save/load state, F fullscreen. Turbo, pause and
+	// the menu are not mapper binds — the patched DOSBox-X owns those keys.
 	// Owned by the app, refreshed every launch.
 	if err := copyFile(filepath.Join(share, "mapper-keen456.map"),
 		filepath.Join(data, "mapper-keen456.map")); err != nil {
@@ -222,6 +231,13 @@ func main() {
 	}
 	// V key cycles video filters in-game (patched DOSBox-X, session-only).
 	cmd.Env = append(cmd.Env, "KEEN_FILTERS="+settings.FilterCycle(shaderDir))
+	// Turbo (hold Shift), pause (F11) and the in-game menu / volume OSD (Tab,
+	// - = *) — all drawn and handled by the patched DOSBox-X.
+	cmd.Env = append(cmd.Env, settings.TurboEnv()...)
+	cmd.Env = append(cmd.Env, overlayEnv(data, ep, settings)...)
+	if settings.Vsync {
+		cmd.Env = append(cmd.Env, "KEEN_GL_VSYNC=1")
+	}
 
 	// Server sync: pull already happened above (never races DOSBox-X's own
 	// file writes); push periodically and on exit.

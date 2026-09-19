@@ -1,0 +1,121 @@
+diff --git a/src/dosbox.cpp b/src/dosbox.cpp
+index b2026d8..981569e 100644
+--- a/src/dosbox.cpp
++++ b/src/dosbox.cpp
+@@ -787,6 +787,61 @@ static void DOSBOX_UnlockSpeed( bool pressed ) {
+     GFX_SetTitle(-1,-1,-1,false);
+ }
+ 
++/* Keen turbo (keen456/native): hold-style fast-forward. DOSBOX_UnlockSpeed
++   above is the hold-semantics speedlock handler but it is static; export a
++   thin wrapper so the key-state poll in sdlmain.cpp can drive it from a plain
++   held key. Ported from zeliard-wasm/native.
++
++   Unlocking the tick limiter alone leaves fast-forward RENDER-bound: every
++   emulated frame is still drawn at full cost. Two knobs fix that, both scoped
++   to the hold and restored on release:
++
++   KEEN_FF_FRAMESKIP (0..10, unset = 6) renders 1 frame in every N+1 while
++   held. At Keen's low real-mode cycle count this is the one that matters.
++
++   KEEN_FF_CYCLES_PCT (1..100, unset = 100 = off) additionally drops
++   CPU_CycleMax to that percentage for the hold, making each emulated
++   millisecond cheaper. Fixed-cycles only — under cycles=auto
++   DOSBOX_UnlockSpeed already does its own /3. */
++void Keen_UnlockSpeed( bool pressed ) {
++    static cpu_cycles_count_t savedCycles = 0;
++    static Bitu savedSkip = 0;
++    static bool skipSaved = false;
++    static int pct = -1, skip = -1;
++    if (pct < 0) {
++        const char *e = getenv("KEEN_FF_CYCLES_PCT");
++        pct = (e != NULL) ? atoi(e) : 100;
++        if (pct < 1 || pct > 100) pct = 100;
++        const char *f = getenv("KEEN_FF_FRAMESKIP");
++        skip = (f != NULL) ? atoi(f) : 6;
++        if (skip < 0 || skip > 10) skip = 6;
++    }
++    if (skip > 0) {
++        if (pressed && !skipSaved) {
++            savedSkip = render.frameskip.max;
++            skipSaved = true;
++            render.frameskip.max = (Bitu)skip;
++        } else if (!pressed && skipSaved) {
++            render.frameskip.max = savedSkip;
++            skipSaved = false;
++        }
++    }
++    if (pct < 100 && !CPU_CycleAutoAdjust) {
++        if (pressed && savedCycles == 0) {
++            savedCycles = CPU_CycleMax;
++            CPU_CycleMax = CPU_CycleMax * pct / 100;
++            if (CPU_CycleMax < 1000) CPU_CycleMax = 1000;
++            LOG_MSG("Keen FF: cycles %d -> %d for the hold",
++                    (int)savedCycles, (int)CPU_CycleMax);
++        } else if (!pressed && savedCycles != 0) {
++            CPU_CycleMax = savedCycles;
++            savedCycles = 0;
++        }
++    }
++    LOG_MSG("Keen FF: %s", pressed ? "on" : "off");
++    DOSBOX_UnlockSpeed(pressed);
++}
++
+ void DOSBOX_UnlockSpeed2( bool pressed ) {
+     if (pressed) {
+         ticksLocked = !ticksLocked;
+diff --git a/src/gui/sdlmain.cpp b/src/gui/sdlmain.cpp
+index 4fe64f4..7ecadb6 100644
+--- a/src/gui/sdlmain.cpp
++++ b/src/gui/sdlmain.cpp
+@@ -5996,6 +5996,42 @@ static void Keen_FilterCyclePoll(void) {
+ }
+ #endif
+ 
++/* Keen turbo (keen456/native): hold a key to fast-forward. Ported from
++   zeliard-wasm/native.
++
++   Polled here rather than bound as a mapper event on purpose. The mapper
++   delivers discrete key-down/key-up events, and a turbo bound that way is
++   unreliable in practice — it can engage seconds late or miss a press
++   entirely. Reading the keyboard state every pass cannot miss a hold or be
++   confused by auto-repeat, which is what the pogo poll above already relies on.
++
++   KEEN_FF_KEY names the key (shift/tab/f, "off" disables; unset = shift).
++   Shift is the default: Keen does not use it, and unlike ctrl (Jump, and mod1
++   for the Ctrl+. / Ctrl+\ quick-save) or alt (Pogo) nothing else wants it.
++   Needs [cpu] stop turbo on key=false, or any other key cancels it. */
++#if defined(C_SDL2)
++static void Keen_TurboPoll(void) {
++    extern void Keen_UnlockSpeed(bool pressed);
++    static int ffScan = -1;
++    if (ffScan < 0) {
++        const char *k = getenv("KEEN_FF_KEY");
++        if      (k == NULL)           ffScan = SDL_SCANCODE_LSHIFT;
++        else if (!strcmp(k, "tab"))   ffScan = SDL_SCANCODE_TAB;
++        else if (!strcmp(k, "f"))     ffScan = SDL_SCANCODE_F;
++        else if (!strcmp(k, "off"))   ffScan = 0;
++        else                          ffScan = SDL_SCANCODE_LSHIFT;
++    }
++    if (ffScan == 0) return;
++    const Uint8 *ks = SDL_GetKeyboardState(NULL);
++    static bool ffHeld = false;
++    bool ff = ks[ffScan] != 0;
++    /* Either side's shift, so the binding does not depend on which one the
++       player reaches for. */
++    if (ffScan == SDL_SCANCODE_LSHIFT) ff = ff || ks[SDL_SCANCODE_RSHIFT] != 0;
++    if (ff != ffHeld) { ffHeld = ff; Keen_UnlockSpeed(ff); }
++}
++#endif
++
+ #if defined(MACOSX)
+ #define DB_POLLSKIP 3
+ #else
+@@ -6007,6 +6043,7 @@ void GFX_Events() {
+     CheckMapperKeyboardLayout();
+ #if defined(C_SDL2)
+     Keen_DesktopPogoPoll();
++    Keen_TurboPoll();
+     Keen_FilterCyclePoll();
+ #endif
+ #if defined(C_SDL2) /* SDL 2.x---------------------------------- */

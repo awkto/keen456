@@ -1,0 +1,32 @@
+diff --git a/src/output/output_opengl.cpp b/src/output/output_opengl.cpp
+index 735849d..f3b2a55 100644
+--- a/src/output/output_opengl.cpp
++++ b/src/output/output_opengl.cpp
+@@ -632,6 +632,27 @@ Bitu OUTPUT_OPENGL_SetSize()
+         return 0;
+     }
+ 
++#if defined(C_SDL2)
++    /* Keen (keen456/native): tear-free presents without touching the emulated
++       VGA rate. Upstream only asks for swap interval 1 under vsyncmode=host,
++       and host also forces the vertical timer to vsyncrate — which is exactly
++       what Keen must not have: its loop is PIT-timed to 35fps, evenly two
++       vblanks apart at the native 70Hz, and a forced rate turns that into a
++       16.7/33.3ms alternation (native/bench-cadence.sh). So ask for the swap
++       interval on its own. It costs nothing in throughput: EndUpdate only
++       swaps frames whose content changed, ~35/s, under any display rate.
++       Asked for here rather than above because the context is certainly
++       current by now. KEEN_GL_VSYNC=1 from the launcher (vsync = on). */
++    {
++        const char *e = getenv("KEEN_GL_VSYNC");
++        if (e != NULL && *e == '1') {
++            const int r = SDL_GL_SetSwapInterval(1);
++            LOG_MSG("Keen: GL swap interval 1 %s (driver reports %d)",
++                    r == 0 ? "set" : "refused", SDL_GL_GetSwapInterval());
++        }
++    }
++#endif
++
+     glFinish();
+     glFlush();
+ 

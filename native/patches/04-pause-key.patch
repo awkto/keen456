@@ -1,0 +1,150 @@
+diff --git a/src/gui/sdlmain.cpp b/src/gui/sdlmain.cpp
+index 7ecadb6..afa0857 100644
+--- a/src/gui/sdlmain.cpp
++++ b/src/gui/sdlmain.cpp
+@@ -1611,9 +1611,40 @@ void PauseWithInterrupts_mapper_shortcut(bool pressed) {
+     mainMenu.get_item("mapper_pauseints").check(pausewithinterrupts_enable).refresh_item(mainMenu);
+ }
+ 
++/* Keen (keen456/native): true while the physical key that drives the
++   pause toggle is still down, so GFX_Events() below can tell one press from
++   the auto-repeat storm that follows it. PauseDOSBoxLoop() clears it on the
++   way out, because the key-up that resumed us never reaches GFX_Events(). */
++bool keen_pause_key_down = false;
++
++/* Which key that is. Zeliard uses B; Keen cannot — B is a letter the player
++   needs for save-game names and for the B-A-T cheat, and this key never
++   reaches the game. KEEN_PAUSE_KEY = f11 (default) | pause | b | off. F11 is
++   free: Keen predates it and the shipped mapper leaves it unbound. */
++SDL_Scancode Keen_PauseScancode(void) {
++    static int scan = -1;
++    if (scan < 0) {
++        const char *k = getenv("KEEN_PAUSE_KEY");
++        if      (k == NULL)             scan = SDL_SCANCODE_F11;
++        else if (!strcmp(k, "pause"))   scan = SDL_SCANCODE_PAUSE;
++        else if (!strcmp(k, "b"))       scan = SDL_SCANCODE_B;
++        else if (!strcmp(k, "off"))     scan = SDL_NUM_SCANCODES; /* matches nothing */
++        else                            scan = SDL_SCANCODE_F11;
++    }
++    return (SDL_Scancode)scan;
++}
++
+ void PauseDOSBoxLoop(Bitu /*unused*/) {
+     bool paused = true;
+     SDL_Event event;
++    /* Keen: set once the pause key has gone down inside this loop, so we resume on its
++       release rather than its press. A press cannot be used: the press that paused
++       us auto-repeats for as long as it is held, every repeat looks exactly
++       like a new press, and the first one would resume the emulator a
++       millisecond after it stopped. Releases do not repeat. The stray key-up
++       belonging to the press that paused us arrives with this still false and
++       is ignored, whether or not the entry flush below already ate it. */
++    bool keen_pause_armed = false;
+ 
+     /* reflect in the menu that we're paused now */
+     mainMenu.get_item("mapper_pause").check(true).refresh_item(mainMenu);
+@@ -1685,6 +1716,15 @@ void PauseDOSBoxLoop(Bitu /*unused*/) {
+ 
+             case SDL_QUIT: KillSwitch(true); break;
+             case SDL_KEYDOWN:   // Must use Pause/Break or escape Key to resume.
++            /* Keen (keen456/native): the pause-toggle key. GFX_Events() owns it
++               and pauses on its press, but this loop never consults that code
++               (or the mapper), so it has to be handled here to resume. Arm on
++               the press and resume on the release — see keen_pause_armed. */
++            if(event.key.keysym.scancode == Keen_PauseScancode() &&
++               !(event.key.keysym.mod & (KMOD_CTRL|KMOD_ALT|KMOD_GUI))) {
++                if (!event.key.repeat) keen_pause_armed = true;
++                break;
++            }
+             if(event.key.keysym.sym == SDLK_PAUSE || event.key.keysym.sym == SDLK_ESCAPE) {
+ 
+                 paused = false;
+@@ -1705,6 +1745,19 @@ void PauseDOSBoxLoop(Bitu /*unused*/) {
+                 break;
+             }
+ #endif
++            /* Keen: upstream falls through to SDL_MOUSEMOTION here, so every
++               key that is not a resume key is handed to HandleMouseMotion() as
++               a motion event through the SDL event union — garbage coordinates
++               fed to the emulated mouse. Swallow the key instead. */
++            break;
++        case SDL_KEYUP:
++            /* Keen: the pause key resumes on release. Nothing else in here cares about
++               key-ups, and upstream lets them fall through to the mouse too. */
++            if (keen_pause_armed && event.key.keysym.scancode == Keen_PauseScancode()) {
++                paused = false;
++                GFX_SetTitle(-1,-1,-1,false);
++            }
++            break;
+         case SDL_MOUSEMOTION:
+ #if defined(C_SDL2)
+             if (touchscreen_finger_lock == no_finger_id &&
+@@ -1736,6 +1789,18 @@ void PauseDOSBoxLoop(Bitu /*unused*/) {
+             HandleTouchscreenFinger(&event.tfinger);
+             break;
+ # endif
++#endif
++#if defined(C_SDL2)
++        /* Keen: upstream ignores window events in here, so a paused window
++           that was covered, minimised or alt-tabbed away from comes back blank
++           and reads as a crash. Repaint when we are told we are visible. */
++        case SDL_WINDOWEVENT:
++            if (event.window.event == SDL_WINDOWEVENT_EXPOSED ||
++                event.window.event == SDL_WINDOWEVENT_RESTORED ||
++                event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
++                if (sdl.draw.callback) (sdl.draw.callback)( GFX_CallBackRedraw );
++            }
++            break;
+ #endif
+         }
+     }
+@@ -1746,6 +1811,22 @@ void PauseDOSBoxLoop(Bitu /*unused*/) {
+ 
+     MAPPER_ReleaseAllKeys();
+ 
++    /* Keen: drop whatever piled up while we were paused. Upstream flushes on
++       the way in but not on the way out, so every key mashed at a window that
++       looked dead is replayed into the game seconds later, and a second queued
++       pause press lands straight back in this loop — which is what made the pause look
++       impossible to escape. SDL_QUIT is the one event worth keeping. */
++    {
++        SDL_Event drop;
++        bool quitting = false;
++        while (SDL_PollEvent(&drop)) if (drop.type == SDL_QUIT) quitting = true;
++        if (quitting) { SDL_Event q; memset(&q,0,sizeof(q)); q.type = SDL_QUIT; SDL_PushEvent(&q); }
++    }
++    /* The pause key is up whenever we leave here (that release is what resumed us), and its
++       key-up never reaches GFX_Events, so clear the flag on its behalf. Without
++       this the next press is read as a repeat and pause stops working entirely. */
++    keen_pause_key_down = false;
++
+ //  KEYBOARD_ClrBuffer();
+     GFX_LosingFocus();
+ 
+@@ -6435,6 +6516,26 @@ void GFX_Events() {
+         case SDL_KEYDOWN:
+         case SDL_KEYUP:
+             if (sdl.desktop.type == SCREEN_GAMELINK) break;
++            /* Keen (keen456/native): the pause toggle (F11, see above) — this
++               code owns it — it is not bound in the mapper and never reaches
++               the game. The mapper cannot own it: PauseDOSBoxLoop() clears every
++               bind's active latch on the way in and out (MAPPER_ReleaseAllKeys),
++               so SDL's auto-repeat key-downs for a key held a moment too long
++               arrive at the mapper as fresh presses and pause the emulator again
++               the instant it resumes — pause then looks like it does nothing at all.
++               Tracking the physical key here makes one press pause exactly once. */
++            if (event.key.keysym.scancode == Keen_PauseScancode() &&
++                !(event.key.keysym.mod & (KMOD_CTRL|KMOD_ALT|KMOD_GUI))) {
++                extern bool keen_pause_key_down;
++                if (event.type == SDL_KEYUP) {
++                    keen_pause_key_down = false;
++                } else if (!event.key.repeat && !keen_pause_key_down) {
++                    keen_pause_key_down = true;
++                    void PauseDOSBox(bool pressed);
++                    PauseDOSBox(true);
++                }
++                break;
++            }
+ #if defined (WIN32) || defined(MACOSX) || defined(C_SDL2)
+             if (event.key.keysym.sym==SDLK_LALT) sdl.laltstate = event.key.type;
+             if (event.key.keysym.sym==SDLK_RALT) sdl.raltstate = event.key.type;

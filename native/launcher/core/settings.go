@@ -23,6 +23,12 @@ type Settings struct {
 	PogoHold  int    // ms Alt must be held for the auto-retract tap; -1 = off
 	Rendering string // smooth | crisp
 	Filter    string // none | scanlines | soft | soft-scanlines | crt | crt-curved | any shader
+	Output    string // opengl | openglnb | surface — DOSBox-X video output
+	Vsync     bool   // tear-free presents (GL swap interval 1); never touches the VGA rate
+
+	TurboKey       string // shift | tab | f | off — hold to fast-forward
+	TurboFrameskip int    // 0..10 frames skipped per frame drawn while turbo is held
+	PauseKey       string // f11 | pause | b | off — pauses the emulator
 
 	Sync      bool   // server-side save sync
 	SyncBase  string // base URL of a keen456 container
@@ -31,6 +37,7 @@ type Settings struct {
 }
 
 const defaultPogoHold = 180
+const defaultTurboFrameskip = 6
 
 func DefaultSettings() Settings {
 	return Settings{
@@ -40,6 +47,65 @@ func DefaultSettings() Settings {
 		PogoHold:  defaultPogoHold,
 		Rendering: "smooth",
 		Filter:    "scanlines",
+		Output:    "opengl",
+		Vsync:     true,
+
+		TurboKey:       "shift",
+		TurboFrameskip: defaultTurboFrameskip,
+		PauseKey:       "f11",
+	}
+}
+
+// TurboKeyName normalises TurboKey. ctrl and alt are not offered: Ctrl is
+// Keen's Jump (and the quick-save modifier) and Alt is the Pogo.
+func (s Settings) TurboKeyName() string {
+	switch s.TurboKey {
+	case "shift", "tab", "f", "off":
+		return s.TurboKey
+	default:
+		return "shift"
+	}
+}
+
+// PauseKeyName normalises PauseKey. B is zeliard's pause key and is accepted
+// here, but it is not the default: the key never reaches the game, and Keen
+// needs B for save-game names and the B-A-T cheat.
+func (s Settings) PauseKeyName() string {
+	switch s.PauseKey {
+	case "f11", "pause", "b", "off":
+		return s.PauseKey
+	default:
+		return "f11"
+	}
+}
+
+// OutputMode normalises Output. Unknown values fall back to opengl.
+func (s Settings) OutputMode() string {
+	switch s.Output {
+	case "opengl", "openglnb", "surface":
+		return s.Output
+	default:
+		return "opengl"
+	}
+}
+
+// UsesGLShader reports whether the chosen output can run a glshader at all.
+// Only the OpenGL family can — and only it can draw the in-game menu and OSD.
+func (s Settings) UsesGLShader() bool {
+	return strings.HasPrefix(s.OutputMode(), "opengl")
+}
+
+// TurboEnv is the environment the patched DOSBox-X reads its turbo and pause
+// keys from (patches/03-turbo-key.patch, 04-pause-key.patch).
+func (s Settings) TurboEnv() []string {
+	skip := s.TurboFrameskip
+	if skip < 0 || skip > 10 {
+		skip = defaultTurboFrameskip
+	}
+	return []string{
+		"KEEN_FF_KEY=" + s.TurboKeyName(),
+		"KEEN_FF_FRAMESKIP=" + strconv.Itoa(skip),
+		"KEEN_PAUSE_KEY=" + s.PauseKeyName(),
 	}
 }
 
@@ -115,6 +181,27 @@ pogo_hold = ` + hold + `
 #   the startup default).
 rendering = ` + s.Rendering + `
 filter = ` + s.Filter + `
+
+# output: opengl (default) / openglnb (same, no bilinear) / surface.
+#   An escape hatch for when a driver's OpenGL is the thing misbehaving. Only
+#   the opengl family can run a filter, the Tab menu and the volume bar; under
+#   surface those are unavailable (the keys for volume still work).
+# vsync: on/off — present each frame on the display's refresh, so scrolling
+#   does not tear. It never changes the emulated video timing: Keen's frames
+#   stay evenly paced at the game's own 35 a second. Turn off only if a driver
+#   makes the game feel laggy with it on.
+output = ` + s.OutputMode() + `
+vsync = ` + onOff(s.Vsync) + `
+
+# turbo_key: hold to fast-forward — shift (default) / tab / f / off.
+#   With tab here, the in-game menu moves from Tab to the backquote key.
+# turbo_frameskip: 0-10 frames skipped per frame drawn while turbo is held;
+#   higher = faster fast-forward, choppier picture while it lasts.
+# pause_key: pauses the emulator (any key it swallows never reaches the game) —
+#   f11 (default) / pause / b / off. Keen's own pause is still P.
+turbo_key = ` + s.TurboKeyName() + `
+turbo_frameskip = ` + strconv.Itoa(s.TurboFrameskip) + `
+pause_key = ` + s.PauseKeyName() + `
 
 # sync: on/off — keep saves on a server too, shared across devices AND with
 # the web app (the same save continues in the browser — cross-play). Each
@@ -237,6 +324,18 @@ func Load() Settings {
 			}
 		case "filter":
 			s.Filter = v
+		case "output":
+			s.Output = v
+		case "vsync":
+			s.Vsync = v != "off" && v != "false" && v != "0"
+		case "turbo_key":
+			s.TurboKey = v
+		case "turbo_frameskip":
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 10 {
+				s.TurboFrameskip = n
+			}
+		case "pause_key":
+			s.PauseKey = v
 		case "sync":
 			s.Sync = v == "on" || v == "true" || v == "1"
 		case "sync_base":

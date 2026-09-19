@@ -1,0 +1,1446 @@
+diff --git a/include/keen_overlay.h b/include/keen_overlay.h
+new file mode 100644
+index 0000000..39ceacd
+--- /dev/null
++++ b/include/keen_overlay.h
+@@ -0,0 +1,35 @@
++/* Keen overlay (keen456/native): volume OSD, reference-map viewer and
++   the in-game menu. Everything lives in src/gui/keen_overlay.cpp; these are
++   the few places the rest of the emulator has to call into it. */
++#ifndef KEEN_OVERLAY_H
++#define KEEN_OVERLAY_H
++
++union SDL_Event;
++
++/* GFX_Events(): offered every key event before the mapper sees it. True means
++   the overlay owns the key and the game must not get it. */
++bool Keen_OverlayKeyEvent(const SDL_Event &event);
++
++/* GFX_Events(): once per call. Applies the saved volume on the first pass,
++   expires the OSD and repaints a screen the game is not currently redrawing. */
++void Keen_OverlayPoll(void);
++
++/* A line of OSD text, shown the same way the volume bar is. */
++void Keen_OverlayToast(const char *text);
++
++/* OUTPUT_OPENGL_EndUpdate(): the OSD wants this frame presented even though
++   the game changed nothing in it. */
++bool Keen_OverlayWantsRepaint(void);
++
++/* OUTPUT_OPENGL_EndUpdate(): draw the OSD over the finished frame, just
++   before the buffer swap. */
++void Keen_OverlayDrawOSD(void);
++
++/* OUTPUT_OPENGL_SetSize(): the GL context or its textures were rebuilt, so
++   every texture id the overlay holds is stale. */
++void Keen_OverlayGLReset(void);
++
++/* sdlmain.cpp, next to the V filter cycle it wraps. */
++const char *Keen_FilterCycleStep(void);
++
++#endif
+diff --git a/src/gui/Makefile.am b/src/gui/Makefile.am
+index 4e16f71..844591c 100644
+--- a/src/gui/Makefile.am
++++ b/src/gui/Makefile.am
+@@ -10,7 +10,8 @@ libgui_a_SOURCES = \
+ 	render_templates_hq2x.h render_templates_hq3x.h \
+ 	midi.cpp midi_win32.h midi_oss.h midi_coreaudio.h \
+ 	midi_alsa.h midi_coremidi.h sdl_gui.cpp dosbox_splash.h \
+-	menu.cpp menu_callback.cpp bitop.cpp ptrop.cpp zipcrc.c zipfile.cpp
++	menu.cpp menu_callback.cpp bitop.cpp ptrop.cpp zipcrc.c zipfile.cpp \
++	keen_overlay.cpp
+ 
+ if C_MT32
+ AM_CPPFLAGS += -I$(top_srcdir)/src/libs/mt32
+diff --git a/src/gui/keen_overlay.cpp b/src/gui/keen_overlay.cpp
+new file mode 100644
+index 0000000..0e0a4e4
+--- /dev/null
++++ b/src/gui/keen_overlay.cpp
+@@ -0,0 +1,1245 @@
++/* Keen overlay (keen456/native): the volume OSD, the reference-map
++   viewer and the in-game menu.
++
++   Why this is in the emulator and not the launcher: all three have to draw on
++   the game's own window, and two of them have to stop the emulation while
++   they are up. The launcher is a separate process that has exec'd away (or is
++   only waiting) by the time the game runs.
++
++   How it draws: only output=opengl is supported. DOSBox-X's OpenGL output is
++   a compatibility-profile context that already uses display lists and
++   immediate mode, so the overlay does the same — plain textured quads with the
++   fixed-function pipeline, the shader program unbound for the duration. With
++   any other output the volume keys still work (without the OSD), M falls back
++   to opening the maps in a browser, and the menu is unavailable.
++
++   How it gets keys: GFX_Events() offers every key event to
++   Keen_OverlayKeyEvent() before the mapper. Like the B pause toggle, none
++   of these may be mapper bindings: the modal screens below are a second event
++   loop, exactly like PauseDOSBoxLoop(), and MAPPER_ReleaseAllKeys() on the way
++   in and out clears the latch that stops SDL's auto-repeat re-firing a bind.
++   For the same reason the modal screens act on the *release* of Esc and Enter
++   — a release cannot repeat, so a key held a moment too long is not replayed
++   into the game as a fresh press the instant emulation resumes.
++
++   The launcher turns all this on with KEEN_OVERLAY=1 and says where things
++   are: KEEN_MAPS (a tab-separated index: path, name, world),
++   KEEN_MAPS_URL (what Ctrl+M opens), KEEN_OVERLAY_STATE (where volume
++   and the map view are remembered), KEEN_MENU_KEY, KEEN_LAUNCHER and
++   KEEN_GUI. Without KEEN_OVERLAY this file does nothing at all. */
++
++#include "config.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <math.h>
++#include <string>
++#include <vector>
++
++#include "dosbox.h"
++#include "logging.h"
++#include "video.h"
++#include "mixer.h"
++#include "mapper.h"
++#include "pic.h"
++#include "control.h"
++#include "setup.h"
++#include "sdlmain.h"
++#include "../ints/int10.h"
++#include "keen_overlay.h"
++
++#if C_OPENGL
++#include "../output/output_opengl.h"
++#endif
++#if C_LIBPNG
++#include <png.h>
++#endif
++
++#if defined(WIN32)
++#include <windows.h>
++#include <shellapi.h>
++#else
++#include <unistd.h>
++#include <sys/types.h>
++#include <sys/wait.h>
++#endif
++
++#if defined(C_SDL2)
++
++extern bool is_paused;
++void GFX_ReleaseMouse(void);
++void MAPPER_ReleaseAllKeys(void);
++void GFX_UpdateSDLCaptureState(void);
++void GFX_SetTitle(int32_t cycles, int frameskip, Bits timing, bool paused);
++void GFX_SwitchFullScreen(void);
++void PauseDOSBox(bool pressed);
++size_t GetGameState_Run(void);
++void SetGameState_Run(int value);
++void SaveGameState_Run(void);
++void LoadGameState_Run(void);
++
++/* ------------------------------------------------------------------ state */
++
++enum ZMode { ZM_NONE = 0, ZM_MAP, ZM_MENU, ZM_HELP };
++enum ZPending { ZP_NONE = 0, ZP_SAVE, ZP_LOAD, ZP_FILTER, ZP_FULLSCREEN, ZP_QUIT };
++
++struct ZMap {
++    std::string path, name, world;
++    /* The remembered view: zoom relative to fit-to-window (1 = whole map
++       visible) and the image point at the centre of the view, as a fraction of
++       the image. Relative on purpose — it survives a window resize or a
++       windowed/fullscreen switch between two visits. */
++    double zoom = 1.0, cx = 0.5, cy = 0.5;
++};
++
++static bool  z_inited = false, z_enabled = false;
++static int   z_volume = 100;          /* percent, steps of Z_VOL_STEP */
++static bool  z_muted = false;
++static std::string z_statePath, z_mapsUrl, z_launcher, z_gui;
++static SDL_Scancode z_menuKey = SDL_SCANCODE_TAB;
++static std::vector<ZMap> z_maps;
++static int   z_mapIdx = 0;
++static bool  z_stateDirty = false;
++
++static ZMode    z_mode = ZM_NONE;      /* which modal screen is, or is about to be, up */
++static bool     z_modalQueued = false;
++static ZPending z_pending = ZP_NONE;
++
++/* OSD: what to show and until when (SDL ticks). */
++enum ZOsdKind { ZO_NONE = 0, ZO_VOLUME, ZO_MUTE, ZO_TOAST };
++static ZOsdKind z_osdKind = ZO_NONE;
++static Uint32   z_osdUntil = 0;
++static std::string z_osdText;
++static int      z_osdRepaints = 0;    /* frames still owed a repaint */
++
++static const int    Z_VOL_STEP = 5;
++static const Uint32 Z_OSD_MS = 1600;
++
++/* Keys whose key-down the overlay swallowed, so the matching key-up is
++   swallowed too and the game never sees half a keystroke. */
++static bool z_swallowed[SDL_NUM_SCANCODES];
++
++/* ------------------------------------------------------------ persistence */
++
++static void zLoadState(void) {
++    if (z_statePath.empty()) return;
++    FILE *f = fopen(z_statePath.c_str(), "r");
++    if (f == NULL) return;
++    char line[1024];
++    std::string curMap;
++    while (fgets(line, sizeof(line), f) != NULL) {
++        char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;
++        char *eq = strchr(line, '='); if (eq == NULL) continue;
++        *eq = 0;
++        const char *k = line, *v = eq + 1;
++        if (!strcmp(k, "volume")) { int n = atoi(v); if (n < 0) n = 0; if (n > 100) n = 100; z_volume = n - (n % Z_VOL_STEP); }
++        else if (!strcmp(k, "muted")) z_muted = atoi(v) != 0;
++        else if (!strcmp(k, "map")) curMap = v;
++        else if (!strncmp(k, "view.", 5)) {
++            double zoom, cx, cy;
++            if (sscanf(v, "%lf %lf %lf", &zoom, &cx, &cy) != 3) continue;
++            if (!(zoom >= 1.0 && zoom <= 10.0 && cx >= 0 && cx <= 1 && cy >= 0 && cy <= 1)) continue;
++            for (size_t i = 0; i < z_maps.size(); i++) {
++                const std::string &p = z_maps[i].path;
++                size_t s = p.find_last_of("/\\");
++                if (p.substr(s == std::string::npos ? 0 : s + 1) == (k + 5)) {
++                    z_maps[i].zoom = zoom; z_maps[i].cx = cx; z_maps[i].cy = cy;
++                }
++            }
++        }
++    }
++    fclose(f);
++    for (size_t i = 0; i < z_maps.size(); i++) {
++        size_t s = z_maps[i].path.find_last_of("/\\");
++        if (z_maps[i].path.substr(s == std::string::npos ? 0 : s + 1) == curMap) z_mapIdx = (int)i;
++    }
++}
++
++static void zSaveState(void) {
++    z_stateDirty = false;
++    if (z_statePath.empty()) return;
++    /* Write beside and rename, so a crash mid-write cannot leave half a file. */
++    std::string tmp = z_statePath + ".tmp";
++    FILE *f = fopen(tmp.c_str(), "w");
++    if (f == NULL) return;
++    fprintf(f, "volume=%d\nmuted=%d\n", z_volume, z_muted ? 1 : 0);
++    for (size_t i = 0; i < z_maps.size(); i++) {
++        const ZMap &m = z_maps[i];
++        size_t s = m.path.find_last_of("/\\");
++        std::string base = m.path.substr(s == std::string::npos ? 0 : s + 1);
++        if ((int)i == z_mapIdx) fprintf(f, "map=%s\n", base.c_str());
++        if (m.zoom != 1.0 || m.cx != 0.5 || m.cy != 0.5)
++            fprintf(f, "view.%s=%.4f %.5f %.5f\n", base.c_str(), m.zoom, m.cx, m.cy);
++    }
++    fclose(f);
++#if defined(WIN32)
++    remove(z_statePath.c_str());      /* rename() does not replace on Windows */
++#endif
++    rename(tmp.c_str(), z_statePath.c_str());
++}
++
++/* UTF-8 from maps.json to the code page 437 of the VGA ROM font the overlay
++   draws with. The map names are ASCII apart from the middle dot. */
++static std::string zToCP437(const std::string &s) {
++    std::string out;
++    for (size_t i = 0; i < s.size();) {
++        unsigned char c = (unsigned char)s[i];
++        if (c < 0x80) { out += (char)c; i++; continue; }
++        size_t n = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : 2;
++        unsigned cp = c & (0xFF >> (n + 1));
++        for (size_t j = 1; j < n && i + j < s.size(); j++) cp = (cp << 6) | ((unsigned char)s[i + j] & 0x3F);
++        i += n;
++        if (cp == 0xB7) out += (char)0xFA;                           /* middle dot */
++        else if (cp == 0x2014 || cp == 0x2013) out += '-';           /* dashes */
++        else out += '?';
++    }
++    return out;
++}
++
++static void zLoadMapIndex(const char *indexPath) {
++    FILE *f = fopen(indexPath, "r");
++    if (f == NULL) return;
++    char line[2048];
++    while (fgets(line, sizeof(line), f) != NULL) {
++        char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;
++        char *t1 = strchr(line, '\t'); if (t1 == NULL) continue;
++        *t1++ = 0;
++        char *t2 = strchr(t1, '\t'); if (t2) *t2++ = 0;
++        ZMap m;
++        m.path = line; m.name = zToCP437(t1); m.world = zToCP437(t2 ? t2 : "");
++        if (!m.path.empty()) z_maps.push_back(m);
++    }
++    fclose(f);
++}
++
++/* ----------------------------------------------------------------- volume */
++
++static void zApplyVolume(void) {
++    /* Squared, so the steps sound even: hearing is roughly logarithmic, and a
++       linear master makes the top half of the range all sound the same. 100%
++       is unity gain — exactly what the emulator did before there was a knob. */
++    float g = z_muted ? 0.0f : (float)z_volume / 100.0f;
++    g *= g;
++    MIXER_SetMaster(g, g);
++}
++
++static void zOsdShow(ZOsdKind kind) {
++    z_osdKind = kind;
++    z_osdUntil = SDL_GetTicks() + Z_OSD_MS;
++    z_osdRepaints = 1;
++}
++
++void Keen_OverlayToast(const char *text) {
++    if (!z_enabled) return;
++    z_osdText = text;
++    zOsdShow(ZO_TOAST);
++}
++
++static void zVolumeStep(int dir) {
++    if (z_muted && dir > 0) z_muted = false;          /* like a TV: volume-up unmutes */
++    else {
++        z_volume += dir * Z_VOL_STEP;
++        if (z_volume < 0) z_volume = 0;
++        if (z_volume > 100) z_volume = 100;
++    }
++    zApplyVolume();
++    z_stateDirty = true;
++    zOsdShow(z_muted ? ZO_MUTE : ZO_VOLUME);
++}
++
++static void zToggleMute(void) {
++    z_muted = !z_muted;
++    zApplyVolume();
++    zSaveState();
++    zOsdShow(z_muted ? ZO_MUTE : ZO_VOLUME);
++}
++
++/* ---------------------------------------------------------- child processes */
++
++/* Run a program. The emulator's own LD_LIBRARY_PATH points at the libraries
++   bundled with it, which a browser or the settings window must not inherit —
++   that is how an AppImage breaks the host's programs. */
++static bool zSpawn(const std::vector<std::string> &argv, bool wait, int *exitCode) {
++    if (exitCode) *exitCode = -1;
++    if (argv.empty()) return false;
++#if defined(WIN32)
++    std::string cmd;
++    for (size_t i = 0; i < argv.size(); i++) {
++        if (i) cmd += ' ';
++        cmd += '"'; cmd += argv[i]; cmd += '"';
++    }
++    STARTUPINFOA si; PROCESS_INFORMATION pi;
++    memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
++    memset(&pi, 0, sizeof(pi));
++    std::vector<char> buf(cmd.begin(), cmd.end()); buf.push_back(0);
++    if (!CreateProcessA(NULL, buf.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) return false;
++    if (wait) {
++        WaitForSingleObject(pi.hProcess, 30000);
++        DWORD code = (DWORD)-1;
++        GetExitCodeProcess(pi.hProcess, &code);
++        if (exitCode) *exitCode = (int)code;
++    }
++    CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
++    return true;
++#else
++    pid_t pid = fork();
++    if (pid < 0) return false;
++    if (pid == 0) {
++        if (!wait) {
++            /* Detach through a second fork so nothing is left to reap. */
++            pid_t p2 = fork();
++            if (p2 != 0) _exit(p2 < 0 ? 127 : 0);
++            setsid();
++        }
++        unsetenv("LD_LIBRARY_PATH");
++        std::vector<char *> av;
++        for (size_t i = 0; i < argv.size(); i++) av.push_back(const_cast<char *>(argv[i].c_str()));
++        av.push_back(NULL);
++        execvp(av[0], av.data());
++        _exit(127);
++    }
++    int status = 0;
++    waitpid(pid, &status, 0);
++    if (wait && exitCode) *exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
++    return true;
++#endif
++}
++
++static bool zOpenMapsExternally(void) {
++    if (z_mapsUrl.empty()) return false;
++#if defined(WIN32)
++    return (INT_PTR)ShellExecuteA(NULL, "open", z_mapsUrl.c_str(), NULL, NULL, SW_SHOWNORMAL) > 32;
++#else
++    std::vector<std::string> av;
++# if defined(MACOSX)
++    av.push_back("open");
++# else
++    av.push_back("xdg-open");
++# endif
++    av.push_back(z_mapsUrl);
++    return zSpawn(av, false, NULL);
++#endif
++}
++
++/* ------------------------------------------------------------- GL drawing */
++
++#if C_OPENGL
++
++#ifndef GL_GENERATE_MIPMAP
++#define GL_GENERATE_MIPMAP 0x8191
++#endif
++#ifndef GL_CLAMP_TO_EDGE
++#define GL_CLAMP_TO_EDGE 0x812F
++#endif
++
++typedef void (APIENTRY *ZGLUseProgramProc)(GLuint program);
++static ZGLUseProgramProc z_glUseProgram = NULL;
++static bool   z_glProcLooked = false;
++static GLuint z_fontTex = 0, z_mapTex = 0;
++static int    z_mapTexIdx = -1, z_mapW = 0, z_mapH = 0;
++static std::string z_mapError;
++
++void Keen_OverlayGLReset(void) {
++    /* The ids died with the old context (or now name someone else's
++       textures), so they are forgotten rather than deleted. */
++    z_fontTex = z_mapTex = 0;
++    z_mapTexIdx = -1;
++    z_glProcLooked = false;
++}
++
++static bool zUsingGL(void) {
++    return sdl.desktop.type == SCREEN_OPENGL && sdl_opengl.inited && sdl.window != NULL;
++}
++
++/* glTexImage2D reads from the bound pixel-unpack buffer when there is one, and
++   the OpenGL output keeps its PBO bound for the whole of a frame in progress.
++   Uploads made here have to come from client memory regardless. */
++struct ZUnpackGuard {
++    GLint pbo = 0;
++    ZUnpackGuard() {
++        if (glBindBufferARB != NULL && sdl_opengl.pixel_buffer_object) {
++            glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING_ARB, &pbo);
++            if (pbo) glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
++        }
++        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
++    }
++    ~ZUnpackGuard() {
++        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
++        if (pbo) glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, (GLuint)pbo);
++    }
++};
++
++/* Everything the overlay draws happens inside one of these: window-pixel
++   coordinates with the origin top-left, alpha blending, no shader — and the
++   output's own state put back afterwards, whichever of its two paths (shader
++   or display list) is live. They differ in viewport and in all three
++   matrices, so all of it is saved. */
++struct ZGLScope {
++    GLint vp[4];
++    ZGLScope(int W, int H) {
++        if (!z_glProcLooked) {
++            z_glProcLooked = true;
++            z_glUseProgram = (ZGLUseProgramProc)SDL_GL_GetProcAddress("glUseProgram");
++        }
++        glGetIntegerv(GL_VIEWPORT, vp);
++        /* GL_TRANSFORM_BIT is the current matrix *mode*, and it matters: the
++           output's display-list path leaves it on GL_TEXTURE and the SDL-drawn
++           menu bar pushes and pops on the assumption that it still is. Leave
++           it anywhere else and the next frame is drawn with a wrecked
++           projection — the game shrinks into a corner of the window. */
++        glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_TEXTURE_BIT | GL_CURRENT_BIT | GL_TRANSFORM_BIT);
++        if (sdl_opengl.program_object && z_glUseProgram) z_glUseProgram(0);
++        glViewport(0, 0, W, H);
++        glMatrixMode(GL_TEXTURE);    glPushMatrix(); glLoadIdentity();
++        glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glOrtho(0, W, H, 0, -1, 1);
++        glMatrixMode(GL_MODELVIEW);  glPushMatrix(); glLoadIdentity();
++        glEnable(GL_BLEND);
++        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
++        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
++    }
++    ~ZGLScope() {
++        glMatrixMode(GL_TEXTURE);    glPopMatrix();
++        glMatrixMode(GL_PROJECTION); glPopMatrix();
++        glMatrixMode(GL_MODELVIEW);  glPopMatrix();
++        glPopAttrib();
++        glViewport(vp[0], vp[1], vp[2], vp[3]);
++        if (sdl_opengl.program_object && z_glUseProgram) z_glUseProgram(sdl_opengl.program_object);
++    }
++};
++
++static void zEnsureFont(void) {
++    if (z_fontTex != 0) return;
++    /* The VGA ROM 8x16 font, 16 glyphs to a row: 128x256, white on clear.
++       (Not int10_font_16_init: that one is empty until a codepage is loaded.) */
++    std::vector<uint8_t> px(128 * 256 * 4, 0);
++    for (int c = 0; c < 256; c++)
++        for (int y = 0; y < 16; y++) {
++            uint8_t bits = int10_font_16[c * 16 + y];
++            for (int x = 0; x < 8; x++) if (bits & (0x80 >> x)) {
++                uint8_t *p = &px[(((c / 16) * 16 + y) * 128 + (c % 16) * 8 + x) * 4];
++                p[0] = p[1] = p[2] = p[3] = 255;
++            }
++        }
++    ZUnpackGuard guard;
++    glGenTextures(1, &z_fontTex);
++    glBindTexture(GL_TEXTURE_2D, z_fontTex);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 128, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
++}
++
++static void zRect(double x, double y, double w, double h, float r, float g, float b, float a) {
++    glDisable(GL_TEXTURE_2D);
++    glColor4f(r, g, b, a);
++    glBegin(GL_QUADS);
++    glVertex2d(x, y); glVertex2d(x + w, y); glVertex2d(x + w, y + h); glVertex2d(x, y + h);
++    glEnd();
++}
++
++static void zTextRaw(double x, double y, int s, const char *str, float r, float g, float b, float a) {
++    glEnable(GL_TEXTURE_2D);
++    glBindTexture(GL_TEXTURE_2D, z_fontTex);
++    glColor4f(r, g, b, a);
++    glBegin(GL_QUADS);
++    for (const unsigned char *p = (const unsigned char *)str; *p; p++, x += 8 * s) {
++        if (*p == ' ') continue;
++        const double u0 = ((*p % 16) * 8) / 128.0, v0 = ((*p / 16) * 16) / 256.0;
++        const double u1 = u0 + 8 / 128.0, v1 = v0 + 16 / 256.0;
++        glTexCoord2d(u0, v0); glVertex2d(x, y);
++        glTexCoord2d(u1, v0); glVertex2d(x + 8 * s, y);
++        glTexCoord2d(u1, v1); glVertex2d(x + 8 * s, y + 16 * s);
++        glTexCoord2d(u0, v1); glVertex2d(x, y + 16 * s);
++    }
++    glEnd();
++}
++
++static int zTextW(int s, const char *str) { return (int)strlen(str) * 8 * s; }
++
++static void zText(double x, double y, int s, const char *str, float r, float g, float b, float a = 1.0f) {
++    zTextRaw(x, y, s, str, r, g, b, a);
++}
++
++/* Text with a dark outline, for drawing straight onto the game picture. */
++static void zTextOutlined(double x, double y, int s, const char *str, float r, float g, float b) {
++    const int o = (s + 1) / 2;
++    for (int dy = -1; dy <= 1; dy++)
++        for (int dx = -1; dx <= 1; dx++)
++            if (dx || dy) zTextRaw(x + dx * o, y + dy * o, s, str, 0, 0, 0, 0.85f);
++    zTextRaw(x, y, s, str, r, g, b, 1.0f);
++}
++
++static void zRectOutlined(double x, double y, double w, double h, int o, float r, float g, float b) {
++    zRect(x - o, y - o, w + 2 * o, h + 2 * o, 0, 0, 0, 0.85f);
++    zRect(x, y, w, h, r, g, b, 1.0f);
++}
++
++/* The game picture as the output last uploaded it, in the output's own state. */
++static void zDrawGameQuad(void) {
++    glBindTexture(GL_TEXTURE_2D, sdl_opengl.texture);
++    if (sdl_opengl.program_object) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++    else glCallList(sdl_opengl.displaylist);
++}
++
++/* ------------------------------------------------------------------- OSD */
++
++static bool zOsdVisible(void) {
++    return z_osdKind != ZO_NONE;
++}
++
++bool Keen_OverlayWantsRepaint(void) {
++    return z_enabled && (zOsdVisible() || z_osdRepaints > 0);
++}
++
++void Keen_OverlayDrawOSD(void) {
++    if (!z_enabled) return;
++    if (z_osdRepaints > 0) z_osdRepaints--;
++    if (!zOsdVisible() || !zUsingGL() || sdl.surface == NULL) return;
++
++    const int W = sdl.surface->w, H = sdl.surface->h;
++    const SDL_Rect clip = sdl.clip;
++    if (W <= 0 || H <= 0 || clip.w <= 0 || clip.h <= 0) return;
++
++    /* The old-television look: big blocky green characters and a row of bars
++       along the bottom of the picture, MUTE in the top corner. Sized off the
++       game picture, not the window, so it is the same in a window and
++       fullscreen. */
++    const int s = (clip.h / 240 > 1) ? clip.h / 240 : 1;
++    const float R = 0.20f, G = 1.00f, B = 0.30f;
++
++    zEnsureFont();
++    ZGLScope scope(W, H);
++
++    if (z_osdKind == ZO_MUTE) {
++        const char *t = "MUTE";
++        zTextOutlined(clip.x + clip.w - zTextW(s, t) - 12 * s, clip.y + 10 * s, s, t, R, G, B);
++    } else if (z_osdKind == ZO_TOAST) {
++        const char *t = z_osdText.c_str();
++        zTextOutlined(clip.x + (clip.w - zTextW(s, t)) / 2.0, clip.y + clip.h - 34 * s, s, t, R, G, B);
++    } else {
++        /* VOLUME  ||||||||||||........  60 */
++        const int segs = 100 / Z_VOL_STEP, segW = 5 * s, gap = 2 * s, barW = segs * (segW + gap) - gap;
++        char num[8]; snprintf(num, sizeof(num), "%3d", z_volume);
++        const int total = zTextW(s, "VOLUME") + 8 * s + barW + 6 * s + zTextW(s, num);
++        double x = clip.x + (clip.w - total) / 2.0;
++        const double y = clip.y + clip.h - 34 * s;
++        zTextOutlined(x, y, s, "VOLUME", R, G, B);
++        x += zTextW(s, "VOLUME") + 8 * s;
++        const int lit = z_volume / Z_VOL_STEP;
++        for (int i = 0; i < segs; i++, x += segW + gap) {
++            if (i < lit) zRectOutlined(x, y + 2 * s, segW, 12 * s, (s + 1) / 2, R, G, B);
++            else         zRectOutlined(x, y + 12 * s, segW, 2 * s, (s + 1) / 2, R, G, B);
++        }
++        x += 6 * s - gap;
++        zTextOutlined(x, y, s, num, R, G, B);
++    }
++}
++
++/* Present the game picture again, with or without the OSD, when the game
++   itself is not drawing — a static screen never reaches EndUpdate's swap, so
++   the OSD would neither appear nor go away. Never while a frame is in
++   progress: the output may be holding its pixel buffer mapped. */
++static void zRepaintIdle(void) {
++    if (!zUsingGL() || sdl.updating) return;
++    zDrawGameQuad();
++    Keen_OverlayDrawOSD();
++    SDL_GL_SwapBuffers();
++}
++
++/* ------------------------------------------------------------ map texture */
++
++static bool zLoadMapTexture(int idx) {
++    if (z_mapTex != 0 && z_mapTexIdx == idx) return true;
++    if (z_mapTex != 0) { glDeleteTextures(1, &z_mapTex); z_mapTex = 0; }
++    z_mapTexIdx = -1; z_mapError.clear();
++    if (idx < 0 || idx >= (int)z_maps.size()) return false;
++#if C_LIBPNG && defined(PNG_SIMPLIFIED_READ_SUPPORTED)
++    png_image img;
++    memset(&img, 0, sizeof(img));
++    img.version = PNG_IMAGE_VERSION;
++    if (!png_image_begin_read_from_file(&img, z_maps[idx].path.c_str())) {
++        z_mapError = std::string("Cannot read ") + z_maps[idx].path;
++        LOG_MSG("Keen: map %s: %s", z_maps[idx].path.c_str(), img.message);
++        return false;
++    }
++    img.format = PNG_FORMAT_RGBA;
++    GLint maxTex = 0;
++    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
++    if ((GLint)img.width > maxTex || (GLint)img.height > maxTex) {
++        z_mapError = "Map image is larger than this GPU's textures";
++        png_image_free(&img);
++        return false;
++    }
++    std::vector<uint8_t> px(PNG_IMAGE_SIZE(img));
++    if (!png_image_finish_read(&img, NULL, px.data(), 0, NULL)) {
++        z_mapError = std::string("Cannot decode ") + z_maps[idx].path;
++        LOG_MSG("Keen: map %s: %s", z_maps[idx].path.c_str(), img.message);
++        png_image_free(&img);
++        return false;
++    }
++    ZUnpackGuard guard;
++    glGenTextures(1, &z_mapTex);
++    glBindTexture(GL_TEXTURE_2D, z_mapTex);
++    /* Mipmapped: a 2568-pixel map fitted to a 1280-pixel window is a 2x
++       reduction, and plain bilinear drops every other pixel of the small
++       lettering on these maps. */
++    glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, GL_TRUE);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)img.width, (GLsizei)img.height, 0,
++                 GL_RGBA, GL_UNSIGNED_BYTE, px.data());
++    z_mapW = (int)img.width; z_mapH = (int)img.height; z_mapTexIdx = idx;
++    return true;
++#else
++    z_mapError = "This build has no PNG support";
++    return false;
++#endif
++}
++
++/* ------------------------------------------------------------ modal: map */
++
++struct ZView { double x, y, w, h; };            /* the area the map may use */
++
++static int zUiScale(int W, int H) {
++    int s = (H + 100) / 360, sw = W / 600;
++    if (sw < s) s = sw;
++    return s < 1 ? 1 : s;
++}
++
++static ZView zMapArea(int W, int H, int s) {
++    const double bar = 16 * s + 10 * s;
++    ZView v; v.x = 0; v.y = bar; v.w = W; v.h = H - 2 * bar;
++    if (v.h < 16) v.h = 16;
++    return v;
++}
++
++static double zFitScale(const ZView &v) {
++    if (z_mapW <= 0 || z_mapH <= 0) return 1.0;
++    double sx = v.w / z_mapW, sy = v.h / z_mapH;
++    return sx < sy ? sx : sy;
++}
++
++static void zClampView(ZMap &m, const ZView &v) {
++    if (m.zoom < 1.0) m.zoom = 1.0;
++    if (m.zoom > 10.0) m.zoom = 10.0;
++    const double sc = zFitScale(v) * m.zoom;
++    const double iw = z_mapW * sc, ih = z_mapH * sc;
++    /* An axis that fits is centred; one that overflows stops at its edges. */
++    if (iw <= v.w) m.cx = 0.5; else { double hx = v.w / 2 / iw; if (m.cx < hx) m.cx = hx; if (m.cx > 1 - hx) m.cx = 1 - hx; }
++    if (ih <= v.h) m.cy = 0.5; else { double hy = v.h / 2 / ih; if (m.cy < hy) m.cy = hy; if (m.cy > 1 - hy) m.cy = 1 - hy; }
++}
++
++/* Zoom by factor, keeping the image point under (px,py) where it is. */
++static void zZoomAt(ZMap &m, const ZView &v, double factor, double px, double py) {
++    const double sc0 = zFitScale(v) * m.zoom;
++    double nz = m.zoom * factor;
++    if (nz < 1.0) nz = 1.0;
++    if (nz > 10.0) nz = 10.0;
++    const double sc1 = zFitScale(v) * nz;
++    if (sc0 <= 0 || sc1 <= 0 || z_mapW <= 0) { m.zoom = nz; return; }
++    const double dx = px - (v.x + v.w / 2), dy = py - (v.y + v.h / 2);
++    m.cx += dx / (z_mapW * sc0) - dx / (z_mapW * sc1);
++    m.cy += dy / (z_mapH * sc0) - dy / (z_mapH * sc1);
++    m.zoom = nz;
++    zClampView(m, v);
++}
++
++static void zDrawBar(double y, double h, int W) {
++    zRect(0, y, W, h, 0.02f, 0.02f, 0.04f, 0.92f);
++}
++
++static void zDrawMap(int W, int H) {
++    glViewport(0, 0, W, H);
++    glClearColor(0.035f, 0.035f, 0.055f, 1.0f);
++    glClear(GL_COLOR_BUFFER_BIT);
++
++    const int s = zUiScale(W, H);
++    const ZView v = zMapArea(W, H, s);
++    zEnsureFont();
++    const bool have = !z_maps.empty() && zLoadMapTexture(z_mapIdx);
++
++    ZGLScope scope(W, H);
++    if (have) {
++        ZMap &m = z_maps[z_mapIdx];
++        zClampView(m, v);
++        const double sc = zFitScale(v) * m.zoom;
++        const double iw = z_mapW * sc, ih = z_mapH * sc;
++        const double x0 = floor(v.x + v.w / 2 - m.cx * iw + 0.5), y0 = floor(v.y + v.h / 2 - m.cy * ih + 0.5);
++        glEnable(GL_TEXTURE_2D);
++        glBindTexture(GL_TEXTURE_2D, z_mapTex);
++        /* Sharp pixels once they are clearly bigger than the screen's, smooth
++           below that, where nearest-neighbour would shimmer while panning. */
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, sc >= 2.0 ? GL_NEAREST : GL_LINEAR);
++        glColor4f(1, 1, 1, 1);
++        glBegin(GL_QUADS);
++        glTexCoord2d(0, 0); glVertex2d(x0, y0);
++        glTexCoord2d(1, 0); glVertex2d(x0 + iw, y0);
++        glTexCoord2d(1, 1); glVertex2d(x0 + iw, y0 + ih);
++        glTexCoord2d(0, 1); glVertex2d(x0, y0 + ih);
++        glEnd();
++    }
++
++    const double bar = v.y, pad = 5 * s;
++    zDrawBar(0, bar, W);
++    zDrawBar(H - bar, bar, W);
++    char buf[256];
++    if (z_maps.empty()) {
++        const char *t = "No maps installed";
++        zText((W - zTextW(s, t)) / 2.0, (H - 16 * s) / 2.0, s, t, 0.8f, 0.8f, 0.8f);
++    } else {
++        const ZMap &m = z_maps[z_mapIdx];
++        snprintf(buf, sizeof(buf), "%02d \xFA %s", z_mapIdx + 1, m.name.c_str());
++        zText(pad * 2, pad, s, buf, 1.0f, 0.86f, 0.45f);
++        int used = (int)(pad * 2) + zTextW(s, buf);
++        snprintf(buf, sizeof(buf), "%d / %d", z_mapIdx + 1, (int)z_maps.size());
++        const int cw = zTextW(s, buf);
++        zText(W - pad * 2 - cw, pad, s, buf, 0.7f, 0.7f, 0.75f);
++        if (!m.world.empty()) {
++            snprintf(buf, sizeof(buf), "World %s", m.world.c_str());
++            const int ww = zTextW(s, buf);
++            double wx = (W - ww) / 2.0;
++            if (wx < used + 3 * 8 * s) wx = used + 3 * 8 * s;
++            if (wx + ww < W - pad * 2 - cw - 8 * s) zText(wx, pad, s, buf, 0.7f, 0.7f, 0.75f);
++        }
++        if (!have) {
++            const char *t = z_mapError.empty() ? "Map could not be loaded" : z_mapError.c_str();
++            zText((W - zTextW(s, t)) / 2.0, (H - 16 * s) / 2.0, s, t, 1.0f, 0.5f, 0.4f);
++        }
++    }
++    /* The longest hint line that fits. */
++    static const char *hints[] = {
++        "\x1B \x1A \x18 \x19 pan   - = zoom   [ ] map   0 fit   Ctrl+M browser   M close",
++        "\x1B\x1A\x18\x19 pan  - = zoom  [ ] map  0 fit  M close",
++        "- = zoom  [ ] map  M close",
++        "M close",
++    };
++    for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]); i++) {
++        if (zTextW(s, hints[i]) <= W - pad * 4 || i + 1 == sizeof(hints) / sizeof(hints[0])) {
++            zText((W - zTextW(s, hints[i])) / 2.0, H - bar + pad, s, hints[i], 0.62f, 0.62f, 0.68f);
++            break;
++        }
++    }
++}
++
++/* ----------------------------------------------------------- modal: menu */
++
++enum ZItem {
++    ZI_RESUME = 0, ZI_SAVE, ZI_LOAD, ZI_SLOT, ZI_VOLUME, ZI_MUTE, ZI_FILTER, ZI_FULLSCREEN,
++    ZI_MAPS, ZI_HELP, ZI_BACKUP, ZI_SETTINGS, ZI_QUIT, ZI_COUNT
++};
++static int  z_menuSel = ZI_RESUME;
++static bool z_quitArmed = false;
++static std::string z_menuStatus;
++
++static bool zItemShown(int it) {
++    if (it == ZI_BACKUP) return !z_launcher.empty();
++    if (it == ZI_SETTINGS) return !z_gui.empty();
++    if (it == ZI_MAPS) return !z_maps.empty();
++    return true;
++}
++
++static std::string zFilterName(void) {
++    Section_prop *sec = static_cast<Section_prop *>(control->GetSection("render"));
++    std::string v = sec ? (std::string)sec->Get_path("glshader")->GetValue() : std::string();
++    size_t s = v.find_last_of("/\\");
++    if (s != std::string::npos) v = v.substr(s + 1);
++    size_t d = v.rfind(".glsl");
++    if (d != std::string::npos) v = v.substr(0, d);
++    return v.empty() ? std::string("none") : v;
++}
++
++static void zItemText(int it, std::string &label, std::string &value) {
++    char buf[64];
++    const int slot = (int)GetGameState_Run();
++    const bool empty = SaveState::instance().isEmpty((size_t)slot);
++    value.clear();
++    switch (it) {
++    case ZI_RESUME:     label = "Resume game"; break;
++    case ZI_SAVE:       label = "Save state"; snprintf(buf, sizeof(buf), "to slot %d", slot + 1); value = buf; break;
++    case ZI_LOAD:       label = "Load state"; snprintf(buf, sizeof(buf), "slot %d%s", slot + 1, empty ? " \xFA empty" : ""); value = buf; break;
++    case ZI_SLOT:       label = "State slot"; snprintf(buf, sizeof(buf), "\x11 %d \x10", slot + 1); value = buf; break;
++    case ZI_VOLUME:     label = "Volume"; snprintf(buf, sizeof(buf), "\x11 %d%% \x10", z_volume); value = buf; break;
++    case ZI_MUTE:       label = "Sound"; value = z_muted ? "muted" : "on"; break;
++    case ZI_FILTER:     label = "Video filter"; value = zFilterName() + " \x10"; break;
++    case ZI_FULLSCREEN: label = "Fullscreen"; value = sdl.desktop.fullscreen ? "on" : "off"; break;
++    case ZI_MAPS:       label = "Maps"; break;
++    case ZI_HELP:       label = "Controls"; break;
++    case ZI_BACKUP:     label = "Back up saves"; break;
++    case ZI_SETTINGS:   label = "Settings window"; break;
++    case ZI_QUIT:       label = "Quit game"; value = z_quitArmed ? "Enter again to quit" : ""; break;
++    }
++}
++
++static void zPanel(int W, int H, int s, int cols, int rows, double *px, double *py) {
++    const double w = (cols + 4) * 8 * s, h = (rows + 2) * 16 * s;
++    const double x = floor((W - w) / 2), y = floor((H - h) / 2);
++    zRect(0, 0, W, H, 0, 0, 0, 0.55f);                        /* dim the game */
++    zRect(x - 2 * s, y - 2 * s, w + 4 * s, h + 4 * s, 0.85f, 0.70f, 0.30f, 1.0f);
++    zRect(x, y, w, h, 0.05f, 0.05f, 0.09f, 0.97f);
++    *px = x + 2 * 8 * s; *py = y + 16 * s;
++}
++
++static void zDrawMenu(int W, int H) {
++    zDrawGameQuad();
++    zEnsureFont();
++    ZGLScope scope(W, H);
++    const int cols = 42;
++    int shown = 0;
++    for (int i = 0; i < ZI_COUNT; i++) if (zItemShown(i)) shown++;
++    int s = zUiScale(W, H);
++    while (s > 1 && ((cols + 4) * 8 * s > W || (shown + 7) * 16 * s > H)) s--;
++    double x, y;
++    zPanel(W, H, s, cols, shown + 5, &x, &y);
++
++    zText(x, y, s, "COMMANDER KEEN", 1.0f, 0.86f, 0.45f);
++    const char *paused = "game paused";
++    zText(x + cols * 8 * s - zTextW(s, paused), y, s, paused, 0.5f, 0.5f, 0.56f);
++    y += 2 * 16 * s;
++    for (int i = 0; i < ZI_COUNT; i++) {
++        if (!zItemShown(i)) continue;
++        std::string label, value;
++        zItemText(i, label, value);
++        const bool sel = (i == z_menuSel);
++        if (sel) {
++            zRect(x - 8 * s, y - 1 * s, (cols + 2) * 8 * s, 16 * s + 2 * s, 0.85f, 0.70f, 0.30f, 0.22f);
++            zText(x, y, s, "\x10", 1.0f, 0.86f, 0.45f);
++        }
++        const float c = sel ? 1.0f : 0.78f;
++        zText(x + 2 * 8 * s, y, s, label.c_str(), c, c, c);
++        if (!value.empty())
++            zText(x + cols * 8 * s - zTextW(s, value.c_str()), y, s, value.c_str(),
++                  sel ? 1.0f : 0.6f, sel ? 0.86f : 0.6f, sel ? 0.45f : 0.66f);
++        y += 16 * s;
++    }
++    y += 16 * s;
++    if (!z_menuStatus.empty()) zText(x, y, s, z_menuStatus.c_str(), 0.45f, 0.95f, 0.55f);
++    else zText(x, y, s, "\x18\x19 select  \x1B\x1A change  Enter choose  Esc back", 0.5f, 0.5f, 0.56f);
++}
++
++static void zDrawHelp(int W, int H) {
++    static const char *rows[][2] = {
++        { "Arrows / Ctrl / Space / Enter", "move, Jump, Shoot, status" },
++        { "Alt (hold)",        "pogo super-bounce" },
++        { "Shift (hold)",      "turbo" },
++        { "F11",               "pause" },
++        { "Ctrl+.  /  Ctrl+\\", "quick save / quick load" },
++        { "- =",               "volume down / up" },
++        { "*  (Shift+8)",      "mute" },
++        { "V",                 "next video filter" },
++        { "F",                 "fullscreen" },
++        { "F1",                "Keen's own help" },
++    };
++    const int n = (int)(sizeof(rows) / sizeof(rows[0]));
++    zDrawGameQuad();
++    zEnsureFont();
++    ZGLScope scope(W, H);
++    const int cols = 58, keyCols = 30;
++    int s = zUiScale(W, H);
++    while (s > 1 && ((cols + 4) * 8 * s > W || (n + 7) * 16 * s > H)) s--;
++    double x, y;
++    zPanel(W, H, s, cols, n + 4, &x, &y);
++    zText(x, y, s, "CONTROLS", 1.0f, 0.86f, 0.45f);
++    y += 2 * 16 * s;
++    for (int i = 0; i < n; i++, y += 16 * s) {
++        zText(x, y, s, rows[i][0], 1.0f, 0.86f, 0.45f);
++        zText(x + keyCols * 8 * s, y, s, rows[i][1], 0.8f, 0.8f, 0.8f);
++    }
++    y += 16 * s;
++    zText(x, y, s, "Esc back", 0.5f, 0.5f, 0.56f);
++}
++
++static void zMenuMove(int dir) {
++    int i = z_menuSel;
++    do { i = (i + dir + ZI_COUNT) % ZI_COUNT; } while (!zItemShown(i));
++    z_menuSel = i;
++    z_quitArmed = false;
++    z_menuStatus.clear();
++}
++
++static void zMenuAdjust(int dir) {
++    switch (z_menuSel) {
++    case ZI_SLOT: {
++        int slot = ((int)GetGameState_Run() + dir + (int)SaveState::SLOT_COUNT) % (int)SaveState::SLOT_COUNT;
++        SetGameState_Run(slot);
++        break; }
++    case ZI_VOLUME: zVolumeStep(dir); z_osdKind = ZO_NONE; z_osdRepaints = 0; break;
++    case ZI_MUTE:   zToggleMute();    z_osdKind = ZO_NONE; z_osdRepaints = 0; break;
++    default: break;
++    }
++}
++
++/* Enter on the selected row. Anything that touches the emulated machine or
++   rebuilds the video output is only *requested* here: it runs from
++   Keen_OverlayPoll() once this loop has unwound, in the same place the
++   mapper would have run it. */
++static void zMenuActivate(void) {
++    const bool wasArmed = z_quitArmed;
++    z_quitArmed = false;
++    z_menuStatus.clear();
++    switch (z_menuSel) {
++    case ZI_RESUME:     z_mode = ZM_NONE; break;
++    case ZI_SAVE:       z_pending = ZP_SAVE; z_mode = ZM_NONE; break;
++    case ZI_LOAD:
++        if (SaveState::instance().isEmpty(GetGameState_Run())) z_menuStatus = "That slot is empty.";
++        else { z_pending = ZP_LOAD; z_mode = ZM_NONE; }
++        break;
++    case ZI_SLOT:       zMenuAdjust(1); break;
++    case ZI_VOLUME:     break;
++    case ZI_MUTE:       zMenuAdjust(1); break;
++    case ZI_FILTER:     z_pending = ZP_FILTER; z_mode = ZM_NONE; break;
++    case ZI_FULLSCREEN: z_pending = ZP_FULLSCREEN; z_mode = ZM_NONE; break;
++    case ZI_MAPS:       z_mode = ZM_MAP; break;
++    case ZI_HELP:       z_mode = ZM_HELP; break;
++    case ZI_BACKUP: {
++        std::vector<std::string> av;
++        av.push_back(z_launcher); av.push_back("saves"); av.push_back("backup");
++        /* --exit-code: 3 means there were no saves, so no backup was made.
++           Plain exit 0 cannot tell that from success, and "backed up" must
++           never be said about a backup that does not exist. */
++        av.push_back("--exit-code");
++        int code = -1;
++        const bool ran = zSpawn(av, true, &code);
++        if (ran && code == 0) z_menuStatus = "Saves backed up, in the backups folder.";
++        else if (ran && code == 3) z_menuStatus = "Nothing to back up yet - no in-game saves.";
++        else z_menuStatus = "Backup FAILED - try: keen456 saves backup";
++        break; }
++    case ZI_SETTINGS: {
++        std::vector<std::string> av;
++        av.push_back(z_gui);
++        z_menuStatus = zSpawn(av, false, NULL) ? "Settings window opened. Changes apply next start."
++                                               : "Could not start the settings window.";
++        break; }
++    case ZI_QUIT:
++        if (wasArmed) { z_pending = ZP_QUIT; z_mode = ZM_NONE; }
++        else z_quitArmed = true;
++        break;
++    }
++}
++
++/* -------------------------------------------------------- the modal loop */
++
++static void zModalLoop(Bitu /*unused*/) {
++    z_modalQueued = false;
++    if (z_mode == ZM_NONE) return;
++    if (!zUsingGL()) { z_mode = ZM_NONE; return; }
++
++    SDL_Event event;
++    bool quitting = false;
++    bool haveResize = false; SDL_Event lastResize;
++    bool escArmed = false, enterArmed = false;
++    bool dragging = false;
++    Uint32 lastClick = 0;
++
++    /* Same way in as PauseDOSBoxLoop(): the game must not keep any key it was
++       holding, and the mouse goes back to the desktop. */
++    MAPPER_ReleaseAllKeys();
++    GFX_ReleaseMouse();
++    GFX_SetTitle(-1, -1, -1, true);
++    GFX_LosingFocus();
++    while (SDL_PollEvent(&event)) if (event.type == SDL_QUIT) quitting = true;
++    SDL_SetRelativeMouseMode(SDL_FALSE);
++    is_paused = true;
++    z_osdKind = ZO_NONE; z_osdRepaints = 0;
++    z_menuStatus.clear(); z_quitArmed = false;
++
++    bool dirty = true;
++    Uint32 last = SDL_GetTicks();
++    while (z_mode != ZM_NONE && !quitting) {
++        int W = 0, H = 0, winW = 0, winH = 0;
++        SDL_GL_GetDrawableSize(sdl.window, &W, &H);
++        SDL_GetWindowSize(sdl.window, &winW, &winH);
++        if (W <= 0 || H <= 0) { W = sdl.surface->w; H = sdl.surface->h; }
++        const double mscale = (winW > 0) ? (double)W / winW : 1.0;
++        const int s = zUiScale(W, H);
++        const ZView view = zMapArea(W, H, s);
++        ZMap *m = (z_mode == ZM_MAP && !z_maps.empty()) ? &z_maps[z_mapIdx] : NULL;
++
++        /* Held keys glide: zoom and pan are integrated per frame, so a hold
++           lands exactly where you let go instead of stepping in jumps. */
++        const Uint8 *ks = SDL_GetKeyboardState(NULL);
++        bool animating = false;
++        const Uint32 now = SDL_GetTicks();
++        double dt = (now - last) / 1000.0; last = now;
++        if (dt > 0.05) dt = 0.05;
++        if (m != NULL && z_mapTexIdx == z_mapIdx) {
++            const bool zin  = ks[SDL_SCANCODE_EQUALS] || ks[SDL_SCANCODE_KP_PLUS];
++            const bool zout = ks[SDL_SCANCODE_MINUS]  || ks[SDL_SCANCODE_KP_MINUS];
++            if (zin != zout) {
++                zZoomAt(*m, view, pow(1.9, zin ? dt : -dt), view.x + view.w / 2, view.y + view.h / 2);
++                animating = dirty = true;
++            }
++            const double sc = zFitScale(view) * m->zoom;
++            const double rate = 0.9 * view.w * dt;               /* px this frame */
++            const int dx = (ks[SDL_SCANCODE_RIGHT] ? 1 : 0) - (ks[SDL_SCANCODE_LEFT] ? 1 : 0);
++            const int dy = (ks[SDL_SCANCODE_DOWN] ? 1 : 0) - (ks[SDL_SCANCODE_UP] ? 1 : 0);
++            if ((dx || dy) && m->zoom > 1.001 && sc > 0) {
++                m->cx += dx * rate / (z_mapW * sc);
++                m->cy += dy * rate / (z_mapH * sc);
++                zClampView(*m, view);
++                animating = dirty = true;
++            }
++        }
++
++        if (dirty) {
++            if (z_mode == ZM_MAP) zDrawMap(W, H);
++            else if (z_mode == ZM_MENU) zDrawMenu(W, H);
++            else zDrawHelp(W, H);
++            SDL_GL_SwapBuffers();
++            dirty = false;
++        }
++
++        bool got;
++        if (animating) { got = SDL_PollEvent(&event) != 0; if (!got) SDL_Delay(4); }
++        else { got = SDL_WaitEventTimeout(&event, 500) != 0; last = SDL_GetTicks(); }
++
++        for (; got; got = SDL_PollEvent(&event) != 0) {
++            switch (event.type) {
++            case SDL_QUIT: quitting = true; break;
++            case SDL_WINDOWEVENT:
++                if (event.window.event == SDL_WINDOWEVENT_RESIZED || event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
++                    lastResize = event; haveResize = true;
++                }
++                dirty = true;
++                break;
++            case SDL_KEYDOWN: {
++                const SDL_Scancode sc = event.key.keysym.scancode;
++                const bool rep = event.key.repeat != 0;
++                const bool ctrl = (event.key.keysym.mod & KMOD_CTRL) != 0;
++                dirty = true;
++                if (sc == SDL_SCANCODE_ESCAPE) { if (!rep) escArmed = true; break; }
++                if (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_KP_ENTER) { if (!rep) enterArmed = true; break; }
++                if (sc == SDL_SCANCODE_M && !rep) {
++                    if (ctrl) { zOpenMapsExternally(); break; }
++                    z_mode = (z_mode == ZM_MAP || z_maps.empty()) ? ZM_NONE : ZM_MAP;
++                    break;
++                }
++                if (sc == z_menuKey && !rep) { z_mode = (z_mode == ZM_MENU) ? ZM_NONE : ZM_MENU; break; }
++                if (z_mode == ZM_MAP && m != NULL) {
++                    const bool atFit = m->zoom <= 1.001;
++                    int step = 0;
++                    if (!rep && (sc == SDL_SCANCODE_RIGHTBRACKET || sc == SDL_SCANCODE_PAGEDOWN)) step = 1;
++                    if (!rep && (sc == SDL_SCANCODE_LEFTBRACKET || sc == SDL_SCANCODE_PAGEUP)) step = -1;
++                    /* With the whole map in view there is nothing to pan, so
++                       the arrows turn the page instead. */
++                    if (!rep && atFit && sc == SDL_SCANCODE_RIGHT) step = 1;
++                    if (!rep && atFit && sc == SDL_SCANCODE_LEFT) step = -1;
++                    if (step) z_mapIdx = (z_mapIdx + step + (int)z_maps.size()) % (int)z_maps.size();
++                    if (!rep && (sc == SDL_SCANCODE_0 || sc == SDL_SCANCODE_KP_0 || sc == SDL_SCANCODE_HOME)) {
++                        m->zoom = 1.0; m->cx = m->cy = 0.5;
++                    }
++                } else if (z_mode == ZM_MENU) {
++                    if (sc == SDL_SCANCODE_UP) zMenuMove(-1);
++                    else if (sc == SDL_SCANCODE_DOWN) zMenuMove(1);
++                    else if (sc == SDL_SCANCODE_LEFT) zMenuAdjust(-1);
++                    else if (sc == SDL_SCANCODE_RIGHT) zMenuAdjust(1);
++                }
++                break; }
++            case SDL_KEYUP: {
++                const SDL_Scancode sc = event.key.keysym.scancode;
++                if (sc == SDL_SCANCODE_ESCAPE && escArmed) {
++                    escArmed = false; dirty = true;
++                    z_mode = (z_mode == ZM_HELP) ? ZM_MENU : ZM_NONE;
++                } else if ((sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_KP_ENTER) && enterArmed) {
++                    enterArmed = false; dirty = true;
++                    if (z_mode == ZM_MENU) zMenuActivate();
++                    else if (z_mode == ZM_HELP) z_mode = ZM_MENU;
++                }
++                break; }
++            case SDL_MOUSEBUTTONDOWN:
++                if (z_mode == ZM_MAP && event.button.button == SDL_BUTTON_LEFT) {
++                    const Uint32 t = SDL_GetTicks();
++                    if (m != NULL && t - lastClick < 350) { m->zoom = 1.0; m->cx = m->cy = 0.5; dirty = true; }
++                    lastClick = t;
++                    dragging = true;
++                }
++                break;
++            case SDL_MOUSEBUTTONUP:
++                if (event.button.button == SDL_BUTTON_LEFT) dragging = false;
++                break;
++            case SDL_MOUSEMOTION:
++                if (dragging && m != NULL && z_mapTexIdx == z_mapIdx) {
++                    const double sc = zFitScale(view) * m->zoom;
++                    if (sc > 0) {
++                        m->cx -= event.motion.xrel * mscale / (z_mapW * sc);
++                        m->cy -= event.motion.yrel * mscale / (z_mapH * sc);
++                        zClampView(*m, view);
++                        dirty = true;
++                    }
++                }
++                break;
++            case SDL_MOUSEWHEEL:
++                if (m != NULL && z_mapTexIdx == z_mapIdx && event.wheel.y != 0) {
++                    int mx = 0, my = 0;
++                    SDL_GetMouseState(&mx, &my);
++                    zZoomAt(*m, view, event.wheel.y > 0 ? 1.15 : 1 / 1.15, mx * mscale, my * mscale);
++                    dirty = true;
++                }
++                break;
++            default: break;
++            }
++        }
++    }
++
++    zSaveState();
++
++    /* And the same way out as PauseDOSBoxLoop(). */
++    GFX_UpdateSDLCaptureState();
++    MAPPER_ReleaseAllKeys();
++    while (SDL_PollEvent(&event)) {
++        if (event.type == SDL_QUIT) quitting = true;
++        else if (event.type == SDL_WINDOWEVENT &&
++                 (event.window.event == SDL_WINDOWEVENT_RESIZED || event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)) {
++            lastResize = event; haveResize = true;
++        }
++    }
++    /* The window may have been resized under us; GFX_Events() never saw it,
++       so hand it the last word on the size now. */
++    if (haveResize) SDL_PushEvent(&lastResize);
++    if (quitting) { SDL_Event q; memset(&q, 0, sizeof(q)); q.type = SDL_QUIT; SDL_PushEvent(&q); }
++    memset(z_swallowed, 0, sizeof(z_swallowed));
++    z_mode = ZM_NONE;
++
++    GFX_LosingFocus();
++    GFX_SetTitle(-1, -1, -1, false);
++    if (sdl.draw.callback) (sdl.draw.callback)(GFX_CallBackReset);
++    is_paused = false;
++}
++
++#else /* !C_OPENGL */
++
++void Keen_OverlayGLReset(void) {}
++bool Keen_OverlayWantsRepaint(void) { return false; }
++void Keen_OverlayDrawOSD(void) {}
++static bool zUsingGL(void) { return false; }
++static void zRepaintIdle(void) {}
++static void zModalLoop(Bitu) { z_modalQueued = false; z_mode = ZM_NONE; }
++
++#endif /* C_OPENGL */
++
++static void zOpenModal(ZMode mode) {
++    if (z_modalQueued || is_paused) return;
++#if C_OPENGL
++    /* Always open on the harmless row, so the menu key followed by Enter is
++       never anything worse than a resume. */
++    z_menuSel = ZI_RESUME;
++#endif
++    z_mode = mode;
++    z_modalQueued = true;
++    PIC_AddEvent(zModalLoop, 0.001);
++}
++
++/* ------------------------------------------------------------ entry points */
++
++static void zInit(void) {
++    z_inited = true;
++    const char *e = getenv("KEEN_OVERLAY");
++    z_enabled = (e != NULL && *e == '1');
++    if (!z_enabled) return;
++    memset(z_swallowed, 0, sizeof(z_swallowed));
++    if ((e = getenv("KEEN_OVERLAY_STATE")) != NULL) z_statePath = e;
++    if ((e = getenv("KEEN_MAPS_URL")) != NULL) z_mapsUrl = e;
++    if ((e = getenv("KEEN_LAUNCHER")) != NULL) z_launcher = e;
++    if ((e = getenv("KEEN_GUI")) != NULL) z_gui = e;
++    if ((e = getenv("KEEN_MAPS")) != NULL) zLoadMapIndex(e);
++    if ((e = getenv("KEEN_MENU_KEY")) != NULL) {
++        if (!strcmp(e, "grave")) z_menuKey = SDL_SCANCODE_GRAVE;
++        else if (!strcmp(e, "f1")) z_menuKey = SDL_SCANCODE_F1;
++        else if (!strcmp(e, "f10")) z_menuKey = SDL_SCANCODE_F10;
++        else if (!strcmp(e, "off")) z_menuKey = SDL_SCANCODE_UNKNOWN;
++    }
++    zLoadState();
++    zApplyVolume();
++    LOG_MSG("Keen: overlay on - volume %d%s, %d maps", z_volume, z_muted ? " (muted)" : "", (int)z_maps.size());
++}
++
++void Keen_OverlayPoll(void) {
++    if (!z_inited) zInit();
++    if (!z_enabled) return;
++
++    if (z_pending != ZP_NONE && !z_modalQueued && z_mode == ZM_NONE) {
++        const ZPending p = z_pending;
++        z_pending = ZP_NONE;
++        char buf[48];
++        switch (p) {
++        case ZP_SAVE:
++            SaveGameState_Run();
++            snprintf(buf, sizeof(buf), "STATE %d SAVED", (int)GetGameState_Run() + 1);
++            Keen_OverlayToast(buf);
++            break;
++        case ZP_LOAD:
++            LoadGameState_Run();
++            snprintf(buf, sizeof(buf), "STATE %d LOADED", (int)GetGameState_Run() + 1);
++            Keen_OverlayToast(buf);
++            break;
++        case ZP_FILTER:     Keen_FilterCycleStep(); break;
++        case ZP_FULLSCREEN: GFX_SwitchFullScreen(); break;
++        case ZP_QUIT: { SDL_Event q; memset(&q, 0, sizeof(q)); q.type = SDL_QUIT; SDL_PushEvent(&q); break; }
++        default: break;
++        }
++    }
++
++    if (z_osdKind != ZO_NONE && (Sint32)(SDL_GetTicks() - z_osdUntil) >= 0) {
++        z_osdKind = ZO_NONE;
++        z_osdRepaints = 2;
++        if (z_stateDirty) zSaveState();
++    }
++    if (z_osdRepaints > 0) zRepaintIdle();
++}
++
++bool Keen_OverlayKeyEvent(const SDL_Event &event) {
++    if (!z_inited) zInit();
++    if (!z_enabled) return false;
++    const SDL_Scancode sc = event.key.keysym.scancode;
++    if ((int)sc < 0 || sc >= SDL_NUM_SCANCODES) return false;
++
++    if (event.type == SDL_KEYUP) {
++        if (!z_swallowed[sc]) return false;
++        z_swallowed[sc] = false;
++        return true;
++    }
++
++    const Uint16 mod = event.key.keysym.mod;
++    const bool rep = event.key.repeat != 0;
++    if (mod & (KMOD_ALT | KMOD_GUI)) return false;
++    const bool ctrl = (mod & KMOD_CTRL) != 0, shift = (mod & KMOD_SHIFT) != 0;
++
++    bool mine = false;
++    if (!ctrl && (sc == SDL_SCANCODE_EQUALS || sc == SDL_SCANCODE_KP_PLUS)) { zVolumeStep(1); mine = true; }
++    else if (!ctrl && (sc == SDL_SCANCODE_MINUS || sc == SDL_SCANCODE_KP_MINUS)) { zVolumeStep(-1); mine = true; }
++    else if (!ctrl && (sc == SDL_SCANCODE_KP_MULTIPLY || (sc == SDL_SCANCODE_8 && shift))) {
++        if (!rep) zToggleMute();
++        mine = true;
++    } else if (sc == SDL_SCANCODE_M && (!z_maps.empty() || !z_mapsUrl.empty())) {
++        /* Keen ships no reference maps, so the launcher sets neither variable
++           and M stays the game's: it is a letter the player needs for
++           save-game names. The viewer is kept for parity with zeliard. */
++        if (!rep) {
++            if (ctrl || !zUsingGL() || z_maps.empty()) {
++                /* In a browser instead — and pause, because the game is about
++                   to be behind another window with nobody at the controls. */
++                if (zOpenMapsExternally()) PauseDOSBox(true);
++            } else zOpenModal(ZM_MAP);
++        }
++        mine = true;
++    } else if (!ctrl && sc == z_menuKey && z_menuKey != SDL_SCANCODE_UNKNOWN && zUsingGL()) {
++        if (!rep) zOpenModal(ZM_MENU);
++        mine = true;
++    }
++    if (mine) z_swallowed[sc] = true;
++    return mine;
++}
++
++#else /* !C_SDL2 */
++
++bool Keen_OverlayKeyEvent(const SDL_Event &) { return false; }
++void Keen_OverlayPoll(void) {}
++void Keen_OverlayToast(const char *) {}
++bool Keen_OverlayWantsRepaint(void) { return false; }
++void Keen_OverlayDrawOSD(void) {}
++void Keen_OverlayGLReset(void) {}
++
++#endif
+diff --git a/src/gui/sdlmain.cpp b/src/gui/sdlmain.cpp
+index afa0857..ebc55f2 100644
+--- a/src/gui/sdlmain.cpp
++++ b/src/gui/sdlmain.cpp
+@@ -6042,8 +6042,10 @@ static void Keen_DesktopPogoPoll(void) {
+    menu item: SetVal + LoadGLShader + forced redraw. Session-only — settings.ini
+    keeps the startup default. */
+ std::string LoadGLShader(Section_prop * section);
+-static void Keen_FilterCyclePoll(void) {
++#include "keen_overlay.h"
++static const char *Keen_FilterCycle(bool step) {
+     enum { KFC_MAX = 16 };
++    static std::string shown;
+     static std::string filters[KFC_MAX];
+     static int n = -1, cur = -1;
+     static bool vHeld = false;
+@@ -6061,19 +6063,39 @@ static void Keen_FilterCyclePoll(void) {
+         std::string curval = (std::string)sec->Get_path("glshader")->GetValue();
+         for (int i = 0; i < n; i++) if (filters[i] == curval) { cur = i; break; }
+     }
+-    if (n < 2) return;
++    if (n < 2) return NULL;
+     const Uint8 *ks = SDL_GetKeyboardState(NULL);
+     const bool v = ks[SDL_SCANCODE_V] != 0 &&
+         !ks[SDL_SCANCODE_LCTRL] && !ks[SDL_SCANCODE_RCTRL] &&
+         !ks[SDL_SCANCODE_LALT] && !ks[SDL_SCANCODE_RALT];
+-    if (v && !vHeld) {
++    if ((v && !vHeld) || step) {
+         cur = (cur + 1) % n;
+         SetVal("render", "glshader", filters[cur]);
+         LoadGLShader(static_cast<Section_prop *>(control->GetSection("render")));
+         GFX_ForceRedrawScreen();
+         LOG_MSG("Keen: filter -> %s", filters[cur].c_str());
++        /* Say which one on screen (keen_overlay.cpp): the difference
++           between two of these is not always obvious at a glance. */
++        std::string name = filters[cur];
++        size_t sl = name.find_last_of("/\\");
++        if (sl != std::string::npos) name = name.substr(sl + 1);
++        size_t dot = name.rfind(".glsl");
++        if (dot != std::string::npos) name = name.substr(0, dot);
++        for (size_t i = 0; i < name.size(); i++) name[i] = (char)toupper((unsigned char)name[i]);
++        shown = "FILTER: " + name;
++        Keen_OverlayToast(shown.c_str());
+     }
+     vHeld = v;
++    return step ? shown.c_str() : NULL;
++}
++
++/* The in-game menu's "Video filter" row: one step of the same cycle. */
++const char *Keen_FilterCycleStep(void) {
++    return Keen_FilterCycle(true);
++}
++
++static void Keen_FilterCyclePoll(void) {
++    Keen_FilterCycle(false);
+ }
+ #endif
+ 
+@@ -6126,6 +6148,7 @@ void GFX_Events() {
+     Keen_DesktopPogoPoll();
+     Keen_TurboPoll();
+     Keen_FilterCyclePoll();
++    Keen_OverlayPoll();
+ #endif
+ #if defined(C_SDL2) /* SDL 2.x---------------------------------- */
+     //Don't poll too often. This can be heavy on the OS, especially Macs.
+@@ -6516,6 +6539,12 @@ void GFX_Events() {
+         case SDL_KEYDOWN:
+         case SDL_KEYUP:
+             if (sdl.desktop.type == SCREEN_GAMELINK) break;
++#if defined(C_SDL2)
++            /* Keen (keen456/native): volume, mute and the in-game menu. Owned
++               here and kept from the mapper for the same reason the pause key
++               is, below — see keen_overlay.cpp. */
++            if (Keen_OverlayKeyEvent(event)) break;
++#endif
+             /* Keen (keen456/native): the pause toggle (F11, see above) — this
+                code owns it — it is not bound in the mapper and never reaches
+                the game. The mapper cannot own it: PauseDOSBoxLoop() clears every
+diff --git a/src/output/output_opengl.cpp b/src/output/output_opengl.cpp
+index c2532fe..735849d 100644
+--- a/src/output/output_opengl.cpp
++++ b/src/output/output_opengl.cpp
+@@ -23,6 +23,7 @@ extern "C" {
+ #include <algorithm>
+ 
+ #include "sdlmain.h"
++#include "keen_overlay.h"
+ #include "render.h"
+ 
+ using namespace std;
+@@ -792,6 +793,9 @@ Bitu OUTPUT_OPENGL_SetSize()
+         glViewport((sdl.surface->w-sdl.clip.w)/2,(sdl.surface->h-sdl.clip.h)/2,sdl.clip.w,sdl.clip.h);
+     else
+         glViewport(0, 0, sdl.surface->w, sdl.surface->h);
++    /* Keen: this is also where a rebuilt GL context first shows up, and
++       the overlay's texture ids belonged to the old one. */
++    Keen_OverlayGLReset();
+     if (sdl_opengl.texture > 0) glDeleteTextures(1, &sdl_opengl.texture);
+     glGenTextures(1, &sdl_opengl.texture);
+     glBindTexture(GL_TEXTURE_2D, sdl_opengl.texture);
+@@ -1044,7 +1048,9 @@ void OUTPUT_OPENGL_EndUpdate(const uint16_t *changedLines)
+ #endif /*C_XBRZ*/
+         if (sdl_opengl.pixel_buffer_object) 
+         {
+-            if (changedLines && (changedLines[0] == sdl.draw.height))
++            /* Keen: an unchanged frame is still presented while the OSD
++               is appearing or going away (keen_overlay.cpp). */
++            if (changedLines && (changedLines[0] == sdl.draw.height) && !Keen_OverlayWantsRepaint())
+                 return;
+ 
+             glUnmapBufferARB(GL_PIXEL_UNPACK_BUFFER_EXT);
+@@ -1065,7 +1071,7 @@ void OUTPUT_OPENGL_EndUpdate(const uint16_t *changedLines)
+         }
+         else if (changedLines) 
+         {
+-            if (changedLines[0] == sdl.draw.height)
++            if (changedLines[0] == sdl.draw.height && !Keen_OverlayWantsRepaint())
+                 return;
+ 
+             Bitu y = 0, index = 0;
+@@ -1105,7 +1111,7 @@ void OUTPUT_OPENGL_EndUpdate(const uint16_t *changedLines)
+                 }
+                 index++;
+             }
+-        } else
++        } else if (!Keen_OverlayWantsRepaint())
+             return;
+ 
+         CheckManagement();
+@@ -1146,6 +1152,9 @@ void OUTPUT_OPENGL_EndUpdate(const uint16_t *changedLines)
+ 	glBindTexture(GL_TEXTURE_2D, sdl_opengl.texture);
+ #endif
+ 
++	/* Keen: volume bar / MUTE / toast, over the finished frame. */
++	Keen_OverlayDrawOSD();
++
+ 	SDL_GL_SwapBuffers();
+ 
+         if (!menu.hidecycles && !sdl.desktop.fullscreen) frames++;

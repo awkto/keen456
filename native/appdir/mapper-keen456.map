@@ -18,7 +18,7 @@ hand_fullscr "key 9 host" "key 9"
 hand_resetsize "key 42 host" 
 hand_pwrbutton 
 hand_togmenu "key 41 host" 
-hand_speedlock "key 53 host" "key 43" 
+hand_speedlock "key 53 host" 
 hand_speedlock2 "key 79 host" 
 hand_speednorm "key 80 host" 
 hand_speedup "key 48 host" 
