@@ -45,7 +45,7 @@ jobs:
       # The native core is a pure function of the pinned DOSBox-X tag, the patch
       # set and the build script — so cache it on exactly those. A patch edit
       # changes the key and forces a real rebuild (~20 min); nothing else does.
-      # The shared 01-desktop-pogo.patch is part of the key: it is applied into
+      # The shared patches (01-desktop-pogo, 07-catchup-cap) are part of the key: they are applied into
       # libmain.so like the android patches.
       - name: Cache native core
         id: native-cache
@@ -54,7 +54,7 @@ jobs:
           path: |
             android-native/app/src/main/jniLibs
             android-native/app/src/main/java/org/libsdl/app
-          key: keen456-android-native-${{ hashFiles('android-native/native/build-android.sh', 'android-native/native/patches/*.patch', 'native/patches/01-desktop-pogo.patch') }}
+          key: keen456-android-native-${{ hashFiles('android-native/native/build-android.sh', 'android-native/native/patches/*.patch', 'native/patches/01-desktop-pogo.patch', 'native/patches/07-catchup-cap.patch') }}
 
       - name: Build native core (DOSBox-X -> libmain.so)
         if: steps.native-cache.outputs.cache-hit != 'true'

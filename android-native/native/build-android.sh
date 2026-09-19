@@ -12,7 +12,8 @@
 # Pipeline:
 #   1. Check the source out at the pinned tag (same tag the Linux build uses).
 #   2. Clean the tree and apply patches/*.patch  +  the SHARED Keen patch
-#      ../../native/patches/01-desktop-pogo.patch — one patch set, all platforms.
+#      ../../native/patches/01-desktop-pogo.patch and 07-catchup-cap.patch —
+#      one patch set, all platforms.
 #   3. Per ABI: build libpng16.so and libSDL2.so (CMake + NDK), then configure and
 #      compile DOSBox-X against them in a hermetic environment (host pkg-config and
 #      host libs hidden so autotools can't false-positive on the dev box).
@@ -41,7 +42,15 @@ read -r -a ABIS <<< "${DBX_ABIS:-arm64-v8a x86_64}"
 # driven from SDL key state). filter-cycle is deliberately NOT here: it calls
 # LoadGLShader, which only exists when DOSBox-X is built with OpenGL, and the
 # Android build is --disable-opengl (GLES device GL + desktop-GLSL shaders).
-SHARED_PATCHES=("$REPO/native/patches/01-desktop-pogo.patch")
+#
+# 07-catchup-cap is shared for the opposite reason — it matters MORE here.
+# DOSBox-X's main loop drops any catch-up beyond 20ms, and since v1.0.3 every
+# present on Android is a vsync-blocking SDL_RenderPresent (patch 0006) that
+# routinely holds the emulation thread for a refresh or more. Each one over
+# 20ms was game time thrown away: the "closer, but not wasm-smooth" of #35.
+# Found and measured on the Linux build (native/README.md, Frame pacing).
+SHARED_PATCHES=("$REPO/native/patches/01-desktop-pogo.patch"
+                "$REPO/native/patches/07-catchup-cap.patch")
 
 note() { printf '\n\033[1;36m>> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m!! %s\033[0m\n' "$*" >&2; }
